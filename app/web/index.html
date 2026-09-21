@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0b1523">
+    <meta name="description" content="Private text link between your devices.">
+    <title>Rainier Link</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <p class="eyebrow">Private device link</p>
+            <h1>Rainier Link</h1>
+          </div>
+        </div>
+
+        <div class="connection-wrap" aria-live="polite">
+          <span class="status-dot is-connecting" id="status-dot" aria-hidden="true"></span>
+          <span id="connection-label">Connecting</span>
+        </div>
+      </header>
+
+      <section class="identity-strip" aria-label="Device identity">
+        <div>
+          <p class="section-label">This browser is</p>
+          <p class="identity-copy" id="identity-copy">Preparing your device identity…</p>
+        </div>
+        <label class="device-picker">
+          <span class="sr-only">Choose this browser's device</span>
+          <select id="device-select" autocomplete="off">
+            <option value="pc">PC</option>
+            <option value="iphone">iPhone</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="conversation" aria-label="Conversation">
+        <div class="message-list" id="message-list" aria-live="polite" aria-relevant="additions">
+          <div class="empty-state" id="empty-state">
+            <span class="empty-glyph" aria-hidden="true">↕</span>
+            <p>Your private channel is ready.</p>
+            <span>Send a note to see it here.</span>
+          </div>
+        </div>
+      </section>
+
+      <div class="feedback" id="feedback" role="status" aria-live="polite"></div>
+
+      <form class="composer" id="composer" novalidate>
+        <label class="sr-only" for="message-input">Message</label>
+        <textarea
+          id="message-input"
+          rows="2"
+          maxlength="65536"
+          placeholder="Write a message…"
+          autocomplete="off"
+          spellcheck="true"
+        ></textarea>
+        <div class="composer-footer">
+          <span class="composer-hint">Enter to send · Shift + Enter for a new line</span>
+          <button class="send-button" id="send-button" type="submit">
+            <span>Send</span>
+            <span class="send-arrow" aria-hidden="true">↗</span>
+          </button>
+        </div>
+      </form>
+
+      <section class="pairing-card" id="pairing-card" aria-label="iPhone pairing">
+        <div class="pairing-copy">
+          <p class="section-label">Bring iPhone into the channel</p>
+          <h2>Scan once. Stay connected.</h2>
+          <p class="pairing-address-label">iPhone address</p>
+          <a class="pairing-address" id="pairing-address" href="#">Looking for the pairing link…</a>
+          <p class="pairing-note" id="pairing-note">Use the camera app on iPhone, then open the link in Safari.</p>
+        </div>
+        <figure class="qr-frame" id="qr-frame">
+          <img id="pairing-qr" alt="QR code for opening Rainier Link on iPhone">
+          <figcaption>Open with iPhone camera</figcaption>
+        </figure>
+      </section>
+    </main>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

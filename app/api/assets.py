@@ -32,6 +32,22 @@ async def upload_image(
     return {"success": True, "message": message, "asset": asset}
 
 
+@router.post("/assets/files")
+async def upload_file(
+    request: Request,
+    file: UploadFile = File(...),
+    sender: str = Form(...),
+    _: str = Depends(require_bearer_token),
+) -> dict[str, object]:
+    """Stream an authenticated generic file into persistent storage."""
+
+    try:
+        message, asset = await _service_for(request).upload_file(file, sender)
+    except UploadError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return {"success": True, "message": message, "asset": asset}
+
+
 @router.get("/assets/{asset_id}")
 def get_asset(
     asset_id: str,
@@ -55,7 +71,7 @@ def get_asset(
         path,
         media_type=asset.mime_type,
         filename=asset.original_filename if download else None,
-        content_disposition_type="attachment",
+        content_disposition_type="attachment" if download else "inline",
     )
 
 

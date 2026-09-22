@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#0b1523">
     <meta name="description" content="Private text link between your devices.">
     <title>Rainier Link</title>
-    <link rel="stylesheet" href="/style.css?v=0.2.1">
+    <link rel="stylesheet" href="/style.css?v=0.3.0">
   </head>
   <body>
     <main class="app-shell">
@@ -64,8 +64,12 @@
         ></textarea>
         <div class="upload-queue" id="upload-queue" aria-live="polite" hidden></div>
         <div class="composer-footer">
-          <label class="image-picker" for="image-input">Choose images</label>
+          <div class="file-pickers">
+            <label class="image-picker" for="image-input">Image</label>
+            <label class="image-picker file-picker" for="file-input">File</label>
+          </div>
           <input class="sr-only" id="image-input" type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif" multiple>
+          <input class="sr-only" id="file-input" type="file" multiple>
           <span class="composer-hint">Enter to send · Shift + Enter for a new line</span>
           <button class="send-button" id="send-button" type="submit">Send <span class="send-arrow" aria-hidden="true">↗</span></button>
         </div>
@@ -101,6 +105,6 @@
       <a class="modal-download" id="modal-download" href="#">Download</a>
     </dialog>
 
-    <script src="/app.js?v=0.2.1" defer></script>
+    <script src="/app.js?v=0.3.0" defer></script>
   </body>
 </html>

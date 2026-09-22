@@ -16,7 +16,12 @@ from app.api.assets import router as assets_router
 from app.core.database import initialize_database
 from app.core.config import HOST, PORT, WEB_DIR
 from app.core.network import build_service_url, get_lan_ip
-from app.core.security import get_access_token, is_valid_token, require_bearer_token
+from app.core.security import (
+    SESSION_COOKIE_NAME,
+    get_access_token,
+    is_valid_token,
+    require_bearer_token,
+)
 from app.core.version import APP_BUILD, APP_VERSION
 from app.repositories.message_repository import MessageRepository
 from app.services.message_service import MessageService, message_service
@@ -86,24 +91,30 @@ def pairing_qr(_: str = Depends(require_bearer_token)) -> Response:
 
 @app.get("/", include_in_schema=False)
 def root(request: Request, token: str | None = None):
-    """Serve the paired web client without exposing the token to LAN visitors."""
+    """Establish a browser session, then serve the paired web client."""
 
-    if token is None:
-        client_host = request.client.host if request.client else ""
-        if client_host in {"127.0.0.1", "::1"}:
-            return RedirectResponse(
-                url=build_service_url("127.0.0.1", PORT, get_access_token()),
-                status_code=307,
+    if token is not None:
+        if not is_valid_token(token):
+            return JSONResponse(
+                {"detail": "Invalid pairing token"},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
             )
-        return JSONResponse(
-            {"detail": "Pairing token required"},
-            status_code=401,
-            headers={"WWW-Authenticate": "Bearer"},
-        )
 
-    if not is_valid_token(token):
+        response = RedirectResponse(url="/", status_code=303)
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=token,
+            path="/",
+            secure=False,
+            httponly=True,
+            samesite="strict",
+        )
+        return response
+
+    if not is_valid_token(request.cookies.get(SESSION_COOKIE_NAME)):
         return JSONResponse(
-            {"detail": "Invalid pairing token"},
+            {"detail": "Pairing session required"},
             status_code=401,
             headers={"WWW-Authenticate": "Bearer"},
         )

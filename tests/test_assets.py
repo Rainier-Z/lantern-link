@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.repositories.asset_repository import AssetRepository
+from app.services.asset_service import AssetService
 
 
 def client_for(tmp_path: Path) -> tuple[TestClient, dict[str, str], Path]:
@@ -68,6 +71,41 @@ def test_missing_file_returns_gone_and_delete_removes_last_reference(tmp_path: P
     deleted = client.delete(f"/api/messages/{created['message']['id']}", headers=headers)
     assert deleted.status_code == 200
     assert client.get(f"/api/assets/{asset_id}", headers=headers).status_code == 404
+
+
+def test_delete_pending_asset_is_retried_on_service_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep metadata pending when unlink fails, then recover it on startup."""
+
+    client, headers, data_dir = client_for(tmp_path)
+    created = upload(client, headers, "retry-on-startup.jpg", b"image-bytes").json()
+    asset_id = created["asset"]["id"]
+    message_id = created["message"]["id"]
+    asset_path = next((data_dir / "assets").rglob(f"{asset_id}.jpg"))
+    original_unlink = Path.unlink
+
+    def fail_only_for_target(path: Path, *, missing_ok: bool = False) -> None:
+        if path.resolve() == asset_path.resolve():
+            raise OSError("simulated physical delete failure")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", fail_only_for_target)
+    deleted = client.delete(f"/api/messages/{message_id}", headers=headers)
+
+    assert deleted.status_code == 200, deleted.text
+    pending = AssetRepository(tmp_path / "rainier.db").get(asset_id)
+    assert pending is not None
+    assert pending.status == "DELETE_PENDING"
+    assert asset_path.is_file()
+
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    recovered = AssetService(tmp_path / "rainier.db")
+
+    completed = recovered.repository.get(asset_id)
+    assert completed is not None
+    assert completed.status == "DELETED"
+    assert not asset_path.exists()
 
 
 def test_upload_requires_token_and_allowed_extension(tmp_path: Path) -> None:

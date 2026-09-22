@@ -27,7 +27,7 @@ class Message(BaseModel):
 
     id: str
     sender: Literal["pc", "iphone"]
-    type: Literal["text", "image"]
+    type: Literal["text", "image", "file"]
     content: str | None = None
     created_at: datetime
     asset_id: str | None = None

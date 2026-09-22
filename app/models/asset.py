@@ -1,4 +1,4 @@
-"""Pydantic models for persisted image assets."""
+"""Pydantic models for persisted generic binary assets."""
 
 from __future__ import annotations
 
@@ -9,12 +9,12 @@ from pydantic import BaseModel, ConfigDict
 
 
 class Asset(BaseModel):
-    """Metadata returned for an image stored outside SQLite."""
+    """Metadata returned for an asset stored outside SQLite."""
 
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    kind: Literal["image"]
+    kind: Literal["image", "file"]
     original_filename: str
     stored_filename: str
     extension: str
@@ -33,5 +33,6 @@ class StorageStats(BaseModel):
 
     total_bytes: int
     image_bytes: int
+    file_bytes: int = 0
     asset_count: int
     message_count: int

@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-from app.models.message import MessageCreate
-from app.services.message_store import MessageStore
-
-
 def test_post_message_with_valid_token_returns_stored_message(
     client, auth_headers, message_payload
 ):
@@ -94,16 +90,3 @@ def test_message_over_64_kibibytes_in_utf8_is_rejected_with_413(
     )
 
     assert response.status_code == 413
-
-
-def test_restart_starts_with_empty_in_memory_history():
-    first_store = MessageStore()
-    second_store = MessageStore()
-    payload = MessageCreate(
-        sender="pc", type="text", content="gone on restart"
-    )
-
-    first_store.add(payload)
-
-    assert first_store.list()
-    assert second_store.list() == []

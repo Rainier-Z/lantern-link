@@ -40,6 +40,7 @@
       </section>
 
       <section class="conversation" aria-label="Conversation">
+        <button class="load-more" id="load-more" type="button" hidden>Load older messages</button>
         <div class="message-list" id="message-list" aria-live="polite" aria-relevant="additions">
           <div class="empty-state" id="empty-state">
             <span class="empty-glyph" aria-hidden="true">↕</span>
@@ -61,21 +62,26 @@
           autocomplete="off"
           spellcheck="true"
         ></textarea>
+        <div class="upload-queue" id="upload-queue" aria-live="polite" hidden></div>
         <div class="composer-footer">
+          <label class="image-picker" for="image-input">Choose images</label>
+          <input class="sr-only" id="image-input" type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif" multiple>
           <span class="composer-hint">Enter to send · Shift + Enter for a new line</span>
-          <button class="send-button" id="send-button" type="submit">
-            <span>Send</span>
-            <span class="send-arrow" aria-hidden="true">↗</span>
-          </button>
+          <button class="send-button" id="send-button" type="submit">Send <span class="send-arrow" aria-hidden="true">↗</span></button>
         </div>
       </form>
+
+      <section class="storage-card" aria-label="Local storage">
+        <span>Storage</span>
+        <strong id="storage-stats">Loading…</strong>
+      </section>
 
       <section class="pairing-card" id="pairing-card" aria-label="iPhone pairing">
         <div class="pairing-copy">
           <p class="section-label">Bring iPhone into the channel</p>
           <h2>Scan once. Stay connected.</h2>
-          <p class="pairing-address-label">iPhone address</p>
-          <a class="pairing-address" id="pairing-address" href="#">Looking for the pairing link…</a>
+          <p class="pairing-address-label">iPhone pairing</p>
+          <p class="pairing-address" id="pairing-address">Use the QR code to open this channel.</p>
           <p class="pairing-note" id="pairing-note">Use the camera app on iPhone, then open the link in Safari.</p>
         </div>
         <figure class="qr-frame" id="qr-frame">
@@ -84,6 +90,12 @@
         </figure>
       </section>
     </main>
+
+    <dialog class="image-modal" id="image-modal">
+      <button class="modal-close" id="modal-close" type="button" aria-label="Close preview">×</button>
+      <img id="modal-image" alt="Full-size image preview">
+      <a class="modal-download" id="modal-download" href="#">Download</a>
+    </dialog>
 
     <script src="/app.js" defer></script>
   </body>

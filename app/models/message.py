@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from app.models.asset import Asset
+
 
 class MessageCreate(BaseModel):
     """Payload accepted by the message endpoint."""
@@ -25,6 +27,10 @@ class Message(BaseModel):
 
     id: str
     sender: Literal["pc", "iphone"]
-    type: Literal["text"]
-    content: str
+    type: Literal["text", "image"]
+    content: str | None = None
     created_at: datetime
+    asset_id: str | None = None
+    status: str = "SENT"
+    deleted_at: datetime | None = None
+    asset: Asset | None = None

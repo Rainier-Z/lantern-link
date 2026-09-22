@@ -3,3 +3,13 @@ __pycache__/
 .venv/
 runtime/*
 !runtime/.gitkeep
+
+# Runtime database, uploaded assets, staging files, and logs are local data.
+data/rainier.db
+data/staging/*
+!data/staging/.gitkeep
+data/assets/*
+!data/assets/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
+*.log

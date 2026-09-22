@@ -5,19 +5,30 @@ from __future__ import annotations
 import webbrowser
 from contextlib import suppress
 from io import BytesIO
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from app.api.messages import router as messages_router
+from app.api.assets import router as assets_router
+from app.core.database import initialize_database
 from app.core.config import HOST, PORT, WEB_DIR
 from app.core.network import build_service_url, get_lan_ip
 from app.core.security import get_access_token, is_valid_token, require_bearer_token
+from app.repositories.message_repository import MessageRepository
+from app.services.message_service import MessageService, message_service
+from app.services.asset_service import AssetService, asset_service
 
 
-app = FastAPI(title="Rainier Link", version="0.1.0")
+initialize_database()
+
+app = FastAPI(title="Rainier Link", version="0.2.0")
 app.state.token = get_access_token()
+app.state.message_service = message_service
+app.state.asset_service = asset_service
 app.include_router(messages_router)
+app.include_router(assets_router)
 
 
 @app.get("/api/health")
@@ -79,6 +90,44 @@ if WEB_DIR.is_dir():
     from fastapi.staticfiles import StaticFiles
 
     app.mount("/", StaticFiles(directory=WEB_DIR), name="web")
+
+
+def create_app(data_dir: str | Path | None = None) -> FastAPI:
+    """Build an application bound to a selected data directory.
+
+    The factory is used by tests and future embedded instances so each app can
+    use an isolated SQLite file without changing the module-level server app.
+    """
+
+    if data_dir is None:
+        service = message_service
+    else:
+        database_path = Path(data_dir) / "rainier.db"
+        service = MessageService(MessageRepository(database_path))
+    asset_bound_service = asset_service if data_dir is None else AssetService(database_path)
+
+    application = FastAPI(title="Rainier Link", version="0.2.0")
+    application.state.token = get_access_token()
+    application.state.message_service = service
+    application.state.asset_service = asset_bound_service
+    application.include_router(messages_router)
+    application.include_router(assets_router)
+    application.add_api_route("/api/health", health, methods=["GET"])
+    application.add_api_route(
+        "/api/pairing",
+        pairing,
+        methods=["GET"],
+    )
+    application.add_api_route(
+        "/api/pairing/qr",
+        pairing_qr,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    application.add_api_route("/", root, methods=["GET"], include_in_schema=False)
+    if WEB_DIR.is_dir():
+        application.mount("/", StaticFiles(directory=WEB_DIR), name="web")
+    return application
 
 
 def generate_pairing_qr() -> bytes:

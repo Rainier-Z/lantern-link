@@ -1,254 +1,188 @@
-# 一、项目目标
+# Rainier Link v0.2 技术方案
 
-Rainier Link v0.1 是运行在 Windows 上的私人局域网通信服务。它让 Windows 与用户自己的 iPhone 通过浏览器建立连接，在无需账号、云服务器或 iOS App 的前提下，完成双向文字传输。
+## 一、目标与状态
 
-本阶段验证的唯一核心假设是：
+Rainier Link 在 Windows 上提供面向可信局域网的浏览器通信服务。v0.1 已完成文字消息、二维码配对和 HTTP 轮询；v0.2 将消息历史迁移到 SQLite，并增加图片传输与本地文件持久化。
 
-```text
-Windows HTTP 服务 ↔ 同一局域网 ↔ iPhone Safari
-PC 发送文字 → iPhone 收到
-iPhone 发送文字 → PC 收到
-```
+本文件描述 v0.2 的实现边界、数据约束和验收标准。图片上传、图片历史展示、预览与删除属于本版本的实现目标；没有完成实现的接口或页面不得在发布说明中宣称已可用。
 
-## （一）交付范围
+## 二、范围与非目标
 
-1. Windows 本地 HTTP 服务
-2. 响应式 HTML、CSS 和原生 JavaScript 页面
-3. PC 与 iPhone 双向文字消息
-4. 基于 HTTP 轮询的消息同步
-5. 启动时生成二维码和临时配对令牌
-6. 消息复制、基础错误提示和设备身份记忆
-7. 面向 Windows、Chrome、Edge 和 iPhone Safari 的手工验收
+### （一）本版本范围
 
-## （二）非目标
+1. 保留 v0.1 的文字消息、二维码配对和 HTTP 轮询。
+2. 使用 SQLite 保存消息历史与图片元数据，服务重启后历史仍可读取。
+3. 使用本地文件系统保存图片二进制，SQLite 不保存图片 BLOB。
+4. 支持 JPG/JPEG、PNG、GIF、WEBP、HEIC、HEIF 的上传、保存与下载。
+5. 上传使用流式读取、1 MB 分块、大小限制和 SHA-256 校验。
+6. 图片以消息形式进入历史，可在线查看或下载；删除消息使用软删除语义。
+7. 所有非健康检查请求继续使用当前启动生成的配对令牌鉴权。
 
-v0.1 不实现图片、文件、大文件、断点续传、原生 iOS App、Windows 原生 GUI、账号、多用户、多设备发现、mDNS、UDP Multicast、互联网跨网络传输、云服务器、数据库、WebSocket、自动剪贴板同步或复杂密钥体系。
+### （二）非目标
 
-# 二、总体架构
+不实现通用文件传输、视频、大文件分块协议、断点续传、云存储、账号和多用户体系、原生 iOS App、Windows 原生 GUI、互联网中继、WebSocket、mDNS、UDP Multicast、HEIC 自动转换或复杂密钥体系。单张图片上限为 100 MB，单条文字上限为 64 KB。
 
-## （一）部署形态
-
-Windows 同时承担服务端、消息暂存、Web 页面提供方和 PC 浏览器客户端角色。服务绑定 `0.0.0.0:9527`，本机页面使用回环地址访问，iPhone 使用启动时检测到的局域网地址访问。
+## 三、总体架构
 
 ```text
 Windows
-┌────────────────────────────────────────┐
-│ FastAPI + Uvicorn                      │
-│ 静态 Web UI                            │
-│ 内存 Message Store                     │
-│ 临时 Pairing Token                     │
-└───────────────────┬────────────────────┘
-                    │ HTTP / Local Wi-Fi
-                    ▼
-              iPhone Safari
+┌────────────────────────────────────────────┐
+│ FastAPI + Uvicorn                           │
+│ 文字消息 API + 图片上传/下载 API              │
+│ SQLite 元数据仓库                           │
+│ data/staging/  →  data/assets/YYYY/MM/DD/   │
+│ 响应式 Web UI + 临时配对令牌                │
+└──────────────────┬─────────────────────────┘
+                   │ HTTP / 私有局域网
+                   ▼
+             iPhone Safari
 ```
 
-## （二）技术选型
+SQLite 仅负责可查询的元数据、历史和关系；图片内容始终留在文件系统。文件路径写入数据库时使用相对 `data/` 的路径，不写入本机绝对路径。
 
-- Python 3.11+
-- FastAPI 与 Uvicorn
-- HTML、CSS、Vanilla JavaScript
-- qrcode 与 Pillow，用于生成配对二维码
-- 内存列表，用于运行期间的消息存储
+运行时目录约定如下：
 
-不引入 React、Vue、Node.js、npm、Rust、Docker、Redis、PostgreSQL、RabbitMQ 或其他与文字链路无关的基础设施。
+```text
+rainier-link/
+├── data/
+│   ├── rainier.db
+│   ├── staging/
+│   │   └── <upload-id>.partial
+│   ├── assets/
+│   │   └── YYYY/MM/DD/<asset-id>.<ext>
+│   └── logs/
+├── app/
+├── tests/
+├── README.md
+└── TECHNICAL_PLAN.md
+```
 
-# 三、通信协议
+`data/rainier.db`、图片、暂存文件和日志均为本机运行数据，不能提交到 Git；目录中的 `.gitkeep` 用于保留空目录。
 
-## （一）消息模型
+## 四、持久化模型
 
-消息统一使用 Message 语义，当前只允许 `type=text`。字段如下：
+### （一）messages
 
 | 字段 | 约束 |
 | --- | --- |
 | `id` | 服务端生成的唯一标识 |
 | `sender` | `pc` 或 `iphone` |
-| `type` | 当前固定为 `text` |
-| `content` | UTF-8 文字，单条不超过 64 KB |
+| `type` | `text` 或 `image` |
+| `text_content` | 文字消息内容；图片消息为空 |
+| `asset_id` | 图片消息引用 `assets.id`；文字消息为空 |
+| `status` | 可见、删除等消息状态 |
 | `created_at` | 服务端生成的时间戳 |
+| `deleted_at` | 软删除时间，可为空 |
 
-Transport 与 Payload 分离。API 不命名为 `send-text`，为未来增加其他 Payload 保留 `messages` 资源边界；但本版本拒绝图片、文件和 Base64 数据。
+### （二）assets
 
-## （二）HTTP API
+| 字段 | 约束 |
+| --- | --- |
+| `id` | 服务端生成的唯一标识 |
+| `kind` | 当前为 `image` |
+| `original_filename` | 用户上传时的原始文件名，仅作为元数据保存 |
+| `stored_filename` | 服务端生成的安全文件名 |
+| `extension` | 规范化后的允许扩展名 |
+| `mime_type` | 允许的图片 MIME 类型 |
+| `size` | 实际写入字节数，不超过 100 MB |
+| `sha256` | 完成上传后计算的完整文件摘要 |
+| `relative_path` | 相对 `data/` 的存储路径 |
+| `status` | `STAGING`、`AVAILABLE`、`DELETED` 或 `MISSING` |
+| `created_at` | 服务端生成的时间戳 |
+| `deleted_at` | 资源删除时间，可为空 |
 
-### 1. 健康检查
+图片上传不做自动去重；同一图片重复上传也生成独立资源。未来的保留策略可以增加设置表，但不在当前版本实现。
+
+## 五、图片上传生命周期
+
+1. 客户端提交 multipart 图片和发送方身份。
+2. 服务端校验令牌、发送方、文件名、扩展名、MIME 类型和大小上限。
+3. 服务端以 1 MB 分块读取到 `data/staging/<upload-id>.partial`，同时计算 SHA-256。
+4. 读取完成后校验实际字节数和允许格式；失败上传不得成为可用资源。
+5. 为最终资源生成安全文件名，并以原子方式将暂存文件移入 `data/assets/YYYY/MM/DD/`。
+6. 在数据库事务中写入 `assets` 记录和对应的 `messages` 记录。
+7. 若数据库事务失败，应将已落地的最终文件置为不可用并报告错误，不能留下指向有效历史的孤儿记录。
+8. 上传源文件只读，不移动或覆盖用户原始文件。
+
+服务启动检查 `data/staging/` 中的 `.partial` 文件时，只报告发现的文件并要求明确确认；本版本不自动删除任何残留文件。
+
+## 六、HTTP API 目标边界
+
+以下是 v0.2 已实现的资源边界。
+
+### （一）现有文字资源
 
 ```text
-GET /api/health
-```
-
-返回服务在线状态，用于确认设备能访问 Windows。
-
-### 2. 发送消息
-
-```text
+GET  /api/health
 POST /api/messages
+GET  /api/messages?limit=50&before=<id>&after=<id>
 ```
 
-请求包含 `sender`、`type` 和 `content`。服务端校验令牌、设备身份、消息类型、非空内容和 64 KB 大小限制，然后生成完整 Message 并写入 Message Store。
+`GET /api/messages` 默认返回最新历史，客户端按时间顺序显示。`limit` 默认 50；`before` 和 `after` 用于分页或增量同步。
 
-### 3. 获取消息
+### （二）图片资源
 
 ```text
-GET /api/messages
+POST   /api/assets/images
+GET    /api/assets/{asset_id}
+DELETE /api/messages/{message_id}
+GET    /api/storage/stats
 ```
 
-返回当前服务进程内已保存的消息列表。客户端持有 `last_message_id`，可通过 `after` 参数只获取该消息之后的新消息。
+图片响应支持 inline 查看和 `download=1` 附件下载。资源记录存在但文件缺失时应标记 `MISSING` 并返回不可用状态，而不是返回伪造的成功内容。
 
-```text
-GET /api/messages?after=<message_id>
-```
+### （三）错误约定
 
-### 4. 错误约定
-
-- `400`：空消息、非法 sender 或不支持的 type
+- `400`：字段格式、发送方、扩展名或 MIME 类型不合法
 - `401`：缺少或无效的配对令牌
-- `413`：消息超过 64 KB
-- `500`：未预期的服务错误
+- `404`：消息或资源不存在
+- `410`：资源元数据存在但物理文件缺失
+- `413`：文字或图片超过大小限制
+- `500`：未预期的服务错误；不得泄露本机绝对路径
 
-# 四、同步与配对
+## 七、安全与本地数据边界
 
-## （一）HTTP 轮询
+服务只面向用户自己的可信局域网。令牌只提供轻量访问控制，不等同于 TLS；不要在公共网络开放服务。代码、测试、日志和文档不得写入真实局域网地址、个人绝对路径、令牌、API key、密码或图片内容。
 
-PC 页面和 iPhone 页面每约 1000 毫秒请求一次 `GET /api/messages` 或增量查询。发送使用 `POST /api/messages`，服务端追加到内存列表；另一端在下一次轮询时取得新消息。v0.1 接受约两秒的端到端可见延迟，不使用 WebSocket 或其他长连接协议。
+运行数据目录必须被 Git 忽略，避免提交数据库、图片、日志和中断上传残留。删除消息需要在用户界面显示明确确认；后端删除动作应是软删除，并在资源无引用时再按既定策略处理本地文件。任何启动残留的删除都必须先向用户列出目标并获得确认。
 
-## （二）配对令牌
+## 八、模块边界
 
-每次服务启动生成新的随机令牌。二维码编码启动提示中的局域网地址和令牌，客户端首次打开页面后将令牌保存在浏览器本地存储，并在 API 请求中发送 Bearer 令牌。
+- `app/core/database.py`：SQLite 连接、初始化和事务边界。
+- `app/repositories/`：消息与资源的查询、写入和状态更新。
+- `app/services/message_service.py`：文字消息历史与分页语义。
+- `app/services/asset_service.py`：图片校验、流式写入、摘要和生命周期。
+- `app/services/asset_service.py`：数据目录、日期路径、流式写入、原子落盘和统计。
+- `app/api/messages.py`：文字资源与删除 API；不直接操作 SQL。
+- `app/api/assets.py`：图片上传、查看、下载和统计 API。
+- `app/main.py`：应用初始化、启动检查、路由注册和本机页面。
+- `app/web/`：文字与图片历史、上传进度、下载和删除确认的响应式页面。
 
-服务端对除健康检查外的 API 请求执行令牌校验：
+页面实现需要同时覆盖 Windows 浏览器和 iPhone Safari；不依赖外部 CDN，不把图片转成 Base64 塞进消息接口。
 
-```text
-缺少令牌或令牌不匹配 → 401 Unauthorized
-```
+## 九、实施顺序
 
-令牌只提供局域网内的轻量访问控制，不等同于 TLS 或完整身份系统。服务重启后令牌失效，客户端需重新扫描二维码。
+1. 初始化 SQLite schema 和 repository，保持现有文字 API 兼容。
+2. 将文字消息从内存存储迁移到 SQLite，并覆盖重启、分页和鉴权测试。
+3. 增加数据目录、暂存文件和最终资源的 storage service。
+4. 增加图片校验、流式上传、摘要、原子落盘和目标图片资源 API。
+5. 增加图片历史展示、上传进度、查看/下载与删除确认页面。
+6. 执行 Windows 本机、iPhone Safari、重启、缺失文件和残留 `.partial` 的验收。
 
-## （三）设备身份
+每一步都应先通过自动化测试，再进入下一步；不因图片功能破坏既有文字链路、配对和局域网边界。
 
-本机页面默认身份为 `pc`；通过局域网地址进入的页面默认身份为 `iphone`。必要时允许使用 URL 参数明确指定身份。客户端将用户选择保存到浏览器本地存储，刷新页面后沿用。
+## 十、验收标准
 
-# 五、网络与启动行为
+- 文字消息在服务重启后仍可读取，旧的鉴权和轮询行为保持有效。
+- JPG、PNG、HEIC/HEIF 至少各覆盖 PC 与 iPhone 来源样例。
+- 图片上传不超过 100 MB，流式写入且不把二进制写入 SQLite。
+- 存储后的字节数和 SHA-256 与输入一致，Unicode、空格和 Emoji 文件名可保存。
+- 中断上传不会显示为可用消息；残留 `.partial` 只报告并等待确认。
+- 删除消息需要显式确认；删除后历史不可见，资源状态符合引用关系。
+- 手动移走或删除资源文件后，历史显示缺失状态并返回不可用响应。
+- 所有受保护资源缺少或使用错误令牌时返回 `401`。
+- 数据库、图片、暂存文件和日志不会出现在 Git 变更中，`.gitkeep` 可以保留。
 
-## （一）局域网地址
+## 十一、后续演进
 
-启动时通过 UDP Socket 的本地地址推断当前局域网 IP，不发送业务数据。若自动检测失败，应提示用户输入本次使用的局域网地址；自动检测必须是默认路径。文档、代码和测试不得写入真实个人 IP。
-
-## （二）启动流程
-
-执行 `python -m app.main` 后，应用按以下顺序工作：
-
-1. 初始化 FastAPI、路由和静态文件
-2. 生成本次启动的随机令牌
-3. 检测局域网地址并构造配对 URL
-4. 生成二维码
-5. 监听 `0.0.0.0:9527`
-6. 输出本机地址、局域网地址、二维码位置和在线状态
-7. 尝试打开 Windows 本机页面
-
-首次监听时，Windows 防火墙只允许专用网络；禁止向公用网络开放端口。路由器 AP 隔离、VPN 和访客网络可能阻断设备间访问，应在故障排查中明确提示。
-
-# 六、模块边界
-
-## （一）应用入口
-
-`app/main.py` 负责 FastAPI 初始化、路由注册、静态文件、启动事件、令牌和二维码初始化，以及打开本机浏览器。
-
-## （二）核心模块
-
-- `core/network.py`：局域网地址检测和 Host URL 生成，不处理消息业务
-- `core/security.py`：随机令牌生成、校验和请求鉴权
-- `models/message.py`：Message 与 MessageCreate 数据模型
-- `services/message_store.py`：内存存储的追加、列表和增量查询
-- `api/messages.py`：只负责 REST API，不直接操作全局列表
-
-## （三）Web 模块
-
-`web/index.html`、`web/app.js` 和 `web/style.css` 提供统一响应式页面。页面必须支持 Windows Chrome、Windows Edge 和 iPhone Safari，包含连接状态、消息列表、输入框、发送按钮和 Copy 按钮。
-
-# 七、目录约定
-
-```text
-rainier-link/
-├── README.md
-├── TECHNICAL_PLAN.md
-├── requirements.txt
-├── app/
-│   ├── __init__.py
-│   ├── main.py
-│   ├── api/
-│   │   ├── __init__.py
-│   │   └── messages.py
-│   ├── core/
-│   │   ├── __init__.py
-│   │   ├── config.py
-│   │   ├── network.py
-│   │   └── security.py
-│   ├── models/
-│   │   ├── __init__.py
-│   │   └── message.py
-│   ├── services/
-│   │   ├── __init__.py
-│   │   └── message_store.py
-│   └── web/
-│       ├── index.html
-│       ├── app.js
-│       └── style.css
-├── runtime/
-│   └── .gitkeep
-└── tests/
-    ├── test_health.py
-    ├── test_messages.py
-    └── test_auth.py
-```
-
-运行时生成的二维码属于临时产物，不应提交个人令牌或地址。消息内存存储不落盘。
-
-# 八、实施顺序
-
-## （一）阶段一至三：本机链路
-
-1. FastAPI 启动与 `GET /api/health`
-2. Message 模型、`POST /api/messages` 和 `GET /api/messages`
-3. 静态 Web UI 与 Windows 双页面发送接收
-
-每一步先在 Windows 本机验证通过，再进入下一步。
-
-## （二）阶段四至六：局域网链路
-
-1. 自动检测局域网地址并监听 `0.0.0.0:9527`
-2. iPhone Safari 访问并完成双向文字传输
-3. 接入令牌校验、二维码配对和无效令牌拒绝
-
-## （三）阶段七：验收
-
-补齐响应式布局、Copy、错误提示和 Windows 防火墙说明，然后执行验收清单与手工测试。不要在本机文字链路跑通前开发文件协议、复杂安全体系或视觉扩展。
-
-# 九、验收标准
-
-## （一）功能验收
-
-- Windows 服务可用 `python -m app.main` 启动
-- 本机页面可访问并显示在线状态
-- iPhone 扫码后可在 Safari 打开同一应用
-- PC → iPhone 和 iPhone → PC 的文字均可在两秒内显示
-- 中文、英文、数字、Emoji、URL 和多行文字保持正确
-- 消息可复制到系统剪贴板
-
-## （二）边界验收
-
-- 空消息返回 `400`
-- 超过 64 KB 返回 `413`
-- 无效令牌访问消息 API 返回 `401`
-- 服务重启后消息清空且可重新启动
-- 公用网络未开放，专用网络可按提示访问
-
-## （三）手工测试
-
-至少覆盖短中文、1000 字文本、URL、Emoji、多行文本、空文本、64 KB 边界、错误令牌、iPhone Safari 刷新、PC 页面刷新和 Windows 服务重启。
-
-# 十、演进约束
-
-后续版本可在不改变消息 API 语义的前提下替换 Message Store 为 SQLite，再评估持久设备配对与 SSE 或 WebSocket。图片和文件应进入独立 Transfer Layer，例如 `transfers` 资源、分块、校验和续传，不得把二进制或 Base64 塞进 `POST /api/messages`。
-
-MVP 的优先级固定为：跑通、稳定、干净。任何新增技术必须直接服务于 Windows 与 iPhone 的局域网双向文字链路。
+大文件分块、断点续传、预览转换、SSE/WebSocket、持久设备管理和云端同步均属于后续评估项。新增能力必须保持图片二进制与 SQLite 元数据分离，并遵守局域网与鉴权边界。

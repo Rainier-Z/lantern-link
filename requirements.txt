@@ -2,3 +2,4 @@ fastapi>=0.110,<1
 uvicorn[standard]>=0.29,<1
 qrcode>=7.4,<9
 Pillow>=10,<12
+python-multipart>=0.0.9,<1

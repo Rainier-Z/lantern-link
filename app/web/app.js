@@ -1,6 +1,5 @@
 (() => {
   "use strict";
-  const CLIENT_VERSION = "0.2.1";
   const POLL_MS = 2000;
   const state = {
     token: new URLSearchParams(location.search).get("token") || "",
@@ -61,12 +60,11 @@
       const response = await fetch("/api/version", { cache: "no-store" });
       if (!response.ok) throw new Error("Version unavailable");
       const data = await response.json();
-      const version = typeof data.version === "string" && data.version.trim() ? data.version.trim() : CLIENT_VERSION;
-      const build = typeof data.build === "string" && data.build.trim() ? ` · ${data.build.trim()}` : "";
-      el.app_version.textContent = `Rainier Link v${version}${build}`;
-    } catch (_) {
-      el.app_version.textContent = `Rainier Link v${CLIENT_VERSION}`;
-    }
+      const version = typeof data.version === "string" ? data.version.trim() : "";
+      const build = typeof data.build === "string" ? data.build.trim() : "";
+      if (!version || !build) throw new Error("Version metadata unavailable");
+      el.app_version.textContent = `Rainier Link v${version} · ${build}`;
+    } catch (_) { /* Keep the compact default when the public endpoint is unavailable. */ }
   }
   function action(label, handler) { const b = document.createElement("button"); b.type = "button"; b.className = "message-action"; b.textContent = label; b.onclick = handler; return b; }
   function previewable(asset) { return asset && !["heic", "heif"].includes((asset.extension || "").toLowerCase()); }

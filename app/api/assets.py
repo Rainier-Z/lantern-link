@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from app.core.security import require_bearer_token
@@ -19,14 +19,14 @@ def _service_for(request: Request) -> AssetService:
 @router.post("/assets/images")
 async def upload_image(
     request: Request,
+    file: UploadFile = File(...),
+    sender: str = Form(...),
     _: str = Depends(require_bearer_token),
 ) -> dict[str, object]:
     """Stream an authenticated multipart image into persistent storage."""
 
     try:
-        message, asset = await _service_for(request).upload_image(
-            request.stream(), request.headers.get("content-type")
-        )
+        message, asset = await _service_for(request).upload_image(file, sender)
     except UploadError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     return {"success": True, "message": message, "asset": asset}

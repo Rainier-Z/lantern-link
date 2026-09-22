@@ -6,12 +6,12 @@ import hashlib
 import logging
 import mimetypes
 import os
-import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncIterable
 from uuid import uuid4
+
+from fastapi import UploadFile
 
 from app.core.config import PROJECT_ROOT
 from app.core.database import DATABASE_PATH, get_connection, initialize_database
@@ -33,10 +33,6 @@ MIME_BY_EXTENSION = {
     ".heic": "image/heic",
     ".heif": "image/heif",
 }
-_DISPOSITION_NAME = re.compile(r'(?:^|;)\s*name="([^"]*)"', re.IGNORECASE)
-_DISPOSITION_FILENAME = re.compile(
-    r'(?:^|;)\s*filename="([^"]*)"', re.IGNORECASE
-)
 
 
 class UploadError(ValueError):
@@ -56,30 +52,6 @@ def _serialize_datetime(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat()
-
-
-def _parse_content_type(value: str | None) -> bytes:
-    if not value or not value.lower().startswith("multipart/form-data"):
-        raise UploadError(400, "Content-Type must be multipart/form-data")
-    match = re.search(r"(?:^|;)\s*boundary=(?:\"([^\"]+)\"|([^;\s]+))", value, re.I)
-    if not match:
-        raise UploadError(400, "Multipart boundary is missing")
-    boundary = (match.group(1) or match.group(2)).encode("latin-1")
-    if not boundary or len(boundary) > 200:
-        raise UploadError(400, "Multipart boundary is invalid")
-    return b"--" + boundary
-
-
-def _parse_headers(raw: bytes) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    for line in raw.split(b"\r\n"):
-        if not line or b":" not in line:
-            continue
-        name, value = line.split(b":", 1)
-        headers[name.decode("latin-1").strip().lower()] = value.decode(
-            "latin-1"
-        ).strip()
-    return headers
 
 
 class AssetService:
@@ -104,146 +76,8 @@ class AssetService:
             LOGGER.warning("Found %d staged partial upload(s): %s", len(partials), partials)
         return partials
 
-    async def _parse_multipart(
-        self,
-        chunks: AsyncIterable[bytes],
-        content_type: str | None,
-        staging_path: Path,
-    ) -> tuple[str, str, str, str, int, str]:
-        """Stream one multipart image part to staging and return its metadata."""
-
-        boundary = _parse_content_type(content_type)
-        delimiter = b"\r\n" + boundary
-        buffer = bytearray()
-        state = "preamble"
-        part_name: str | None = None
-        filename: str | None = None
-        file_mime: str | None = None
-        sender: str | None = None
-        sender_bytes = bytearray()
-        file_part_seen = False
-        digest = hashlib.sha256()
-        size = 0
-
-        def emit_file(data: bytes, output) -> None:
-            nonlocal size
-            if not data:
-                return
-            size += len(data)
-            if size > MAX_IMAGE_BYTES:
-                raise UploadError(413, "Image exceeds the 100 MiB limit")
-            digest.update(data)
-            output.write(data)
-
-        with staging_path.open("wb") as output:
-            async for chunk in chunks:
-                if not chunk:
-                    continue
-                buffer.extend(chunk)
-                while True:
-                    if state == "preamble":
-                        index = buffer.find(boundary)
-                        if index < 0:
-                            keep = max(len(boundary) + 4, 16)
-                            if len(buffer) > keep:
-                                del buffer[:-keep]
-                            break
-                        del buffer[: index + len(boundary)]
-                        if buffer.startswith(b"--"):
-                            state = "done"
-                            continue
-                        if not buffer.startswith(b"\r\n"):
-                            raise UploadError(400, "Malformed multipart body")
-                        del buffer[:2]
-                        state = "headers"
-                    elif state == "headers":
-                        index = buffer.find(b"\r\n\r\n")
-                        if index < 0:
-                            if len(buffer) > 16 * 1024:
-                                raise UploadError(400, "Multipart headers are too large")
-                            break
-                        headers = _parse_headers(bytes(buffer[:index]))
-                        del buffer[: index + 4]
-                        disposition = headers.get("content-disposition", "")
-                        name_match = _DISPOSITION_NAME.search(disposition)
-                        if not name_match:
-                            raise UploadError(400, "Multipart field name is missing")
-                        part_name = name_match.group(1)
-                        filename_match = _DISPOSITION_FILENAME.search(disposition)
-                        filename = filename_match.group(1) if filename_match else None
-                        if filename is not None:
-                            try:
-                                filename = filename.encode("latin-1").decode("utf-8")
-                            except UnicodeError:
-                                # Older clients may send a legacy filename encoding.
-                                pass
-                        file_mime = headers.get("content-type")
-                        if part_name == "file":
-                            if file_part_seen:
-                                raise UploadError(400, "Only one file is allowed")
-                            file_part_seen = True
-                        state = "data"
-                    elif state == "data":
-                        index = buffer.find(delimiter)
-                        if index < 0:
-                            keep = len(delimiter) + 4
-                            if len(buffer) > keep:
-                                payload = bytes(buffer[:-keep])
-                                if part_name == "file":
-                                    emit_file(payload, output)
-                                elif part_name == "sender":
-                                    sender_bytes.extend(payload)
-                                del buffer[:-keep]
-                            break
-                        payload = bytes(buffer[:index])
-                        if part_name == "file":
-                            emit_file(payload, output)
-                        elif part_name == "sender":
-                            sender_bytes.extend(payload)
-                        del buffer[: index + len(delimiter)]
-                        state = "boundary_end"
-                    elif state == "boundary_end":
-                        if len(buffer) < 2:
-                            break
-                        if buffer.startswith(b"--"):
-                            del buffer[:2]
-                            state = "done"
-                            continue
-                        if not buffer.startswith(b"\r\n"):
-                            raise UploadError(400, "Malformed multipart boundary")
-                        del buffer[:2]
-                        state = "headers"
-                    elif state == "done":
-                        # Ignore the optional final CRLF and reject non-whitespace bytes.
-                        if buffer and bytes(buffer).strip(b"\r\n 	"):
-                            raise UploadError(400, "Unexpected bytes after multipart body")
-                        buffer.clear()
-                        break
-            if state not in {"done", "boundary_end"}:
-                raise UploadError(400, "Incomplete multipart upload")
-
-        if state == "boundary_end":
-            raise UploadError(400, "Incomplete multipart upload")
-        sender = bytes(sender_bytes).decode("utf-8", errors="replace").strip()
-        if sender not in {"pc", "iphone"}:
-            raise UploadError(422, "sender must be pc or iphone")
-        if not file_part_seen or not filename:
-            raise UploadError(400, "An image file field is required")
-        safe_filename = Path(filename.replace("\\", "/")).name
-        extension = Path(safe_filename).suffix.lower()
-        if extension not in ALLOWED_EXTENSIONS:
-            raise UploadError(415, "Unsupported image format")
-        if size <= 0:
-            raise UploadError(400, "Image cannot be empty")
-        mime_type = file_mime or MIME_BY_EXTENSION[extension]
-        if mime_type == "application/octet-stream":
-            mime_type = MIME_BY_EXTENSION[extension]
-        if not mime_type.startswith("image/"):
-            raise UploadError(415, "Unsupported image media type")
-        return sender, safe_filename, extension[1:], mime_type, size, digest.hexdigest()
-
     async def upload_image(
-        self, chunks: AsyncIterable[bytes], content_type: str | None
+        self, file: UploadFile, sender: str
     ) -> tuple[Message, Asset]:
         """Persist a streamed image and its image message atomically."""
 
@@ -251,9 +85,42 @@ class AssetService:
         staging_path = self.staging_dir / f"{upload_id}.partial"
         final_path: Path | None = None
         try:
-            sender, filename, extension, mime_type, size, sha256 = await self._parse_multipart(
-                chunks, content_type, staging_path
-            )
+            sender = sender.strip()
+            if sender not in {"pc", "iphone"}:
+                raise UploadError(422, "sender must be pc or iphone")
+
+            filename = (file.filename or "").strip()
+            if not filename:
+                raise UploadError(400, "An image file field is required")
+            safe_filename = Path(filename.replace("\\", "/")).name
+            extension = Path(safe_filename).suffix.lower()
+            if extension not in ALLOWED_EXTENSIONS:
+                raise UploadError(415, "Unsupported image format")
+
+            mime_type = file.content_type or MIME_BY_EXTENSION[extension]
+            if mime_type == "application/octet-stream":
+                mime_type = MIME_BY_EXTENSION[extension]
+            if not mime_type.startswith("image/"):
+                raise UploadError(415, "Unsupported image media type")
+
+            digest = hashlib.sha256()
+            size = 0
+            with staging_path.open("wb") as output:
+                while True:
+                    chunk = await file.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > MAX_IMAGE_BYTES:
+                        raise UploadError(413, "Image exceeds the 100 MiB limit")
+                    digest.update(chunk)
+                    output.write(chunk)
+            if size <= 0:
+                raise UploadError(400, "Image cannot be empty")
+            sha256 = digest.hexdigest()
+            filename = safe_filename
+            extension = extension[1:]
+
             created_at = _utc_now()
             date_dir = self.assets_dir / created_at.strftime("%Y") / created_at.strftime("%m") / created_at.strftime("%d")
             date_dir.mkdir(parents=True, exist_ok=True)
@@ -311,6 +178,8 @@ class AssetService:
             if staging_path.is_file():
                 staging_path.unlink()
             raise
+        finally:
+            await file.close()
 
     def resolve_asset_path(self, asset: Asset) -> Path:
         """Resolve an internally stored relative path below the data directory."""

@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-import asyncio
 
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.services.asset_service import AssetService
 
 
 def client_for(tmp_path: Path) -> tuple[TestClient, dict[str, str], Path]:
@@ -22,6 +20,20 @@ def upload(client: TestClient, headers: dict[str, str], name: str, content: byte
         headers=headers,
         data={"sender": "iphone"},
         files={"file": (name, content, "image/jpeg")},
+    )
+
+
+def upload_with_ordered_parts(
+    client: TestClient,
+    headers: dict[str, str],
+    parts: list[tuple[str, object]],
+):
+    """Submit the same ordered multipart parts a browser FormData can emit."""
+
+    return client.post(
+        "/api/assets/images",
+        headers=headers,
+        files=parts,
     )
 
 
@@ -85,23 +97,67 @@ def test_png_and_heic_are_stored_without_conversion(tmp_path: Path) -> None:
         assert client.get(f"/api/assets/{asset['id']}", headers=headers).content == b"original-image-bytes"
 
 
-def test_multipart_file_part_can_span_multiple_chunks(tmp_path: Path) -> None:
-    service = AssetService(tmp_path / "rainier.db")
-    boundary = b"test-boundary"
-    image = b"x" * (1024 * 1024 + 17)
-    body = (
-        b"--" + boundary + b"\r\nContent-Disposition: form-data; name=\"sender\"\r\n\r\npc\r\n"
-        b"--" + boundary + b"\r\nContent-Disposition: form-data; name=\"file\"; filename=\"large.jpg\"\r\n"
-        b"Content-Type: image/jpeg\r\n\r\n" + image + b"\r\n--" + boundary + b"--\r\n"
+def test_browser_formdata_file_then_sender_order_is_accepted(tmp_path: Path) -> None:
+    client, headers, _ = client_for(tmp_path)
+    response = upload_with_ordered_parts(
+        client,
+        headers,
+        [
+            ("file", ("from-browser.jpg", b"file-first", "image/jpeg")),
+            ("sender", (None, "iphone")),
+        ],
     )
 
-    async def chunks():
-        for start in range(0, len(body), 8191):
-            yield body[start : start + 8191]
+    assert response.status_code == 200, response.text
+    assert response.json()["message"]["sender"] == "iphone"
+    assert response.json()["asset"]["size"] == len(b"file-first")
 
-    staged = service.staging_dir / "test.partial"
-    sender, filename, extension, mime, size, sha256 = asyncio.run(
-        service._parse_multipart(chunks(), f"multipart/form-data; boundary={boundary.decode()}", staged)
+
+def test_browser_formdata_sender_then_file_order_is_accepted(tmp_path: Path) -> None:
+    client, headers, _ = client_for(tmp_path)
+    response = upload_with_ordered_parts(
+        client,
+        headers,
+        [
+            ("sender", (None, "pc")),
+            ("file", ("from-browser.png", b"sender-first", "image/png")),
+        ],
     )
-    assert (sender, filename, extension, mime, size) == ("pc", "large.jpg", "jpg", "image/jpeg", len(image))
-    assert sha256 and staged.read_bytes() == image
+
+    assert response.status_code == 200, response.text
+    assert response.json()["message"]["sender"] == "pc"
+    assert response.json()["asset"]["size"] == len(b"sender-first")
+
+
+def test_asset_get_and_download_require_auth_and_preserve_bytes(tmp_path: Path) -> None:
+    client, headers, _ = client_for(tmp_path)
+    source = b"exact-original-bytes\x00\xff"
+    created = upload(client, headers, "download.jpg", source).json()
+    asset_id = created["asset"]["id"]
+
+    assert client.get(f"/api/assets/{asset_id}").status_code == 401
+    assert client.get(f"/api/assets/{asset_id}?download=1").status_code == 401
+
+    inline = client.get(f"/api/assets/{asset_id}", headers=headers)
+    download = client.get(
+        f"/api/assets/{asset_id}?download=1",
+        headers=headers,
+    )
+    assert inline.status_code == 200, inline.text
+    assert download.status_code == 200, download.text
+    assert inline.content == source
+    assert download.content == source
+
+
+def test_upload_errors_return_json_detail(tmp_path: Path) -> None:
+    client, headers, _ = client_for(tmp_path)
+    response = client.post(
+        "/api/assets/images",
+        headers=headers,
+        files=[("sender", (None, "iphone"))],
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body.get("detail")
+    assert body["detail"]

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from app.api.messages import router as messages_router
 from app.api.assets import router as assets_router
@@ -16,6 +17,7 @@ from app.core.database import initialize_database
 from app.core.config import HOST, PORT, WEB_DIR
 from app.core.network import build_service_url, get_lan_ip
 from app.core.security import get_access_token, is_valid_token, require_bearer_token
+from app.core.version import APP_BUILD, APP_VERSION
 from app.repositories.message_repository import MessageRepository
 from app.services.message_service import MessageService, message_service
 from app.services.asset_service import AssetService, asset_service
@@ -23,7 +25,9 @@ from app.services.asset_service import AssetService, asset_service
 
 initialize_database()
 
-app = FastAPI(title="Rainier Link", version="0.2.0")
+STATIC_NO_CACHE_PATHS = {"/", "/app.js", "/style.css"}
+
+app = FastAPI(title="Rainier Link", version=APP_VERSION)
 app.state.token = get_access_token()
 app.state.message_service = message_service
 app.state.asset_service = asset_service
@@ -31,11 +35,36 @@ app.include_router(messages_router)
 app.include_router(assets_router)
 
 
+def configure_cache_policy(application: FastAPI) -> None:
+    """Disable browser persistence for the small, version-sensitive web shell."""
+
+    @application.middleware("http")
+    async def cache_policy(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path in STATIC_NO_CACHE_PATHS:
+            response.headers["Cache-Control"] = (
+                "no-store, no-cache, must-revalidate, max-age=0"
+            )
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
+
+configure_cache_policy(app)
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     """Return a lightweight service liveness response."""
 
     return {"status": "ok", "service": "rainier-link"}
+
+
+@app.get("/api/version")
+def version() -> dict[str, str]:
+    """Return public runtime version metadata without exposing private state."""
+
+    return {"version": APP_VERSION, "build": APP_BUILD}
 
 
 @app.get("/api/pairing")
@@ -87,8 +116,6 @@ def root(request: Request, token: str | None = None):
 
 if WEB_DIR.is_dir():
     # Keep this conditional so the backend remains importable before the UI exists.
-    from fastapi.staticfiles import StaticFiles
-
     app.mount("/", StaticFiles(directory=WEB_DIR), name="web")
 
 
@@ -106,13 +133,15 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         service = MessageService(MessageRepository(database_path))
     asset_bound_service = asset_service if data_dir is None else AssetService(database_path)
 
-    application = FastAPI(title="Rainier Link", version="0.2.0")
+    application = FastAPI(title="Rainier Link", version=APP_VERSION)
     application.state.token = get_access_token()
     application.state.message_service = service
     application.state.asset_service = asset_bound_service
     application.include_router(messages_router)
     application.include_router(assets_router)
+    configure_cache_policy(application)
     application.add_api_route("/api/health", health, methods=["GET"])
+    application.add_api_route("/api/version", version, methods=["GET"])
     application.add_api_route(
         "/api/pairing",
         pairing,

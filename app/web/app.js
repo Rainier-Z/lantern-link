@@ -1,5 +1,6 @@
 (() => {
   "use strict";
+  const CLIENT_VERSION = "0.2.1";
   const POLL_MS = 2000;
   const state = {
     token: new URLSearchParams(location.search).get("token") || "",
@@ -12,7 +13,7 @@
     pairingObjectUrl: "",
     modalRequest: 0,
   };
-  const el = Object.fromEntries(["status-dot", "connection-label", "identity-copy", "device-select", "message-list", "empty-state", "feedback", "composer", "message-input", "send-button", "image-input", "upload-queue", "storage-stats", "load-more", "pairing-card", "pairing-qr", "qr-frame", "image-modal", "modal-image", "modal-download", "modal-close"].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
+  const el = Object.fromEntries(["status-dot", "connection-label", "identity-copy", "device-select", "message-list", "empty-state", "feedback", "composer", "message-input", "send-button", "image-input", "upload-queue", "storage-stats", "load-more", "pairing-card", "pairing-qr", "qr-frame", "image-modal", "modal-image", "modal-download", "modal-close", "app-version"].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
   const auth = (headers = {}) => {
     const result = new Headers(headers);
     result.set("Authorization", `Bearer ${state.token}`);
@@ -54,6 +55,18 @@
   }
   async function getAssetObjectUrl(asset) {
     return makeObjectUrl(await getAssetBlob(asset));
+  }
+  async function loadVersion() {
+    try {
+      const response = await fetch("/api/version", { cache: "no-store" });
+      if (!response.ok) throw new Error("Version unavailable");
+      const data = await response.json();
+      const version = typeof data.version === "string" && data.version.trim() ? data.version.trim() : CLIENT_VERSION;
+      const build = typeof data.build === "string" && data.build.trim() ? ` · ${data.build.trim()}` : "";
+      el.app_version.textContent = `Rainier Link v${version}${build}`;
+    } catch (_) {
+      el.app_version.textContent = `Rainier Link v${CLIENT_VERSION}`;
+    }
   }
   function action(label, handler) { const b = document.createElement("button"); b.type = "button"; b.className = "message-action"; b.textContent = label; b.onclick = handler; return b; }
   function previewable(asset) { return asset && !["heic", "heif"].includes((asset.extension || "").toLowerCase()); }
@@ -166,6 +179,6 @@
   async function stats() { try { const data = await (await api("/api/storage/stats")).json(); el.storage_stats.textContent = `${formatBytes(data.image_bytes)} · ${data.asset_count} images`; } catch (_) { el.storage_stats.textContent = "Unavailable"; } }
   async function sendText(event) { event.preventDefault(); const content = el.message_input.value; if (!content.trim()) return; el.send_button.disabled = true; try { const body = await (await api("/api/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sender: state.device, type: "text", content }) })).json(); addMessage(body.message); state.newestId = body.message.id; el.message_input.value = ""; } catch (error) { feedback(error.message, true); } finally { el.send_button.disabled = false; } }
   async function pairingQr() { try { const url = makeObjectUrl(await (await api("/api/pairing/qr")).blob()); releaseObjectUrl(state.pairingObjectUrl); state.pairingObjectUrl = url; el.pairing_qr.src = url; } catch (_) { el.qr_frame.hidden = true; } }
-  function init() { state.device = ["localhost", "127.0.0.1"].includes(location.hostname) ? "pc" : "iphone"; el.device_select.value = state.device; const updateDevice = () => { state.device = el.device_select.value; el.identity_copy.textContent = `Messages from this browser are labeled ${state.device === "pc" ? "PC" : "iPhone"}.`; }; updateDevice(); el.device_select.onchange = updateDevice; el.composer.onsubmit = sendText; el.image_input.onchange = () => { drawQueue(files()); uploadFiles(); }; el.load_more.onclick = () => older().catch((error) => feedback(error.message, true)); el.modal_close.onclick = closePreview; el.image_modal.addEventListener("close", closePreview); el.image_modal.onclick = (event) => { if (event.target === el.image_modal) closePreview(); }; window.addEventListener("beforeunload", releaseAllObjectUrls); if (!state.token) { el.pairing_card.hidden = true; connection("auth", "Needs pairing"); feedback("Open the current QR pairing link.", true); return; } Promise.all([initial(), stats(), pairingQr()]).then(() => { connection("connected", "Connected"); poll(); }).catch((error) => { connection("offline", "Offline"); feedback(error.message, true); }); }
+  function init() { loadVersion(); state.device = ["localhost", "127.0.0.1"].includes(location.hostname) ? "pc" : "iphone"; el.device_select.value = state.device; const updateDevice = () => { state.device = el.device_select.value; el.identity_copy.textContent = `Messages from this browser are labeled ${state.device === "pc" ? "PC" : "iPhone"}.`; }; updateDevice(); el.device_select.onchange = updateDevice; el.composer.onsubmit = sendText; el.image_input.onchange = () => { drawQueue(files()); uploadFiles(); }; el.load_more.onclick = () => older().catch((error) => feedback(error.message, true)); el.modal_close.onclick = closePreview; el.image_modal.addEventListener("close", closePreview); el.image_modal.onclick = (event) => { if (event.target === el.image_modal) closePreview(); }; window.addEventListener("beforeunload", releaseAllObjectUrls); if (!state.token) { el.pairing_card.hidden = true; connection("auth", "Needs pairing"); feedback("Open the current QR pairing link.", true); return; } Promise.all([initial(), stats(), pairingQr()]).then(() => { connection("connected", "Connected"); poll(); }).catch((error) => { connection("offline", "Offline"); feedback(error.message, true); }); }
   init();
 })();

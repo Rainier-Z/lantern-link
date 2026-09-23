@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import FileResponse
 
 from app.core.security import require_bearer_token
+from app.models.asset import Asset
 from app.services.asset_service import AssetService, UploadError, asset_service
 
 
@@ -14,6 +15,30 @@ router = APIRouter(prefix="/api", tags=["assets"])
 
 def _service_for(request: Request) -> AssetService:
     return getattr(request.app.state, "asset_service", asset_service)
+
+
+def resolve_content_disposition(
+    asset: Asset, *, download: bool, preview: bool
+) -> str:
+    """Choose whether an asset is served inline or as a download attachment."""
+
+    if download and preview:
+        raise HTTPException(
+            status_code=400,
+            detail="download and preview cannot be used together",
+        )
+    if download:
+        return "attachment"
+    if asset.kind == "file":
+        if not preview:
+            return "attachment"
+        if (
+            asset.extension.lower() == ".pdf"
+            and asset.mime_type.lower() == "application/pdf"
+        ):
+            return "inline"
+        raise HTTPException(status_code=415, detail="Asset preview is unsupported")
+    return "inline"
 
 
 @router.post("/assets/images")
@@ -53,9 +78,10 @@ def get_asset(
     asset_id: str,
     request: Request,
     download: bool = Query(default=False),
+    preview: bool = Query(default=False),
     _: str = Depends(require_bearer_token),
 ) -> FileResponse:
-    """Serve a stored image inline or as an attachment."""
+    """Stream an available asset with its resolved content disposition."""
 
     result = _service_for(request).get_asset_file(asset_id)
     if result is None:
@@ -63,15 +89,19 @@ def get_asset(
     asset, path = result
     if asset.status == "MISSING":
         raise HTTPException(status_code=410, detail="Asset file is missing")
-    if asset.status == "DELETED":
-        raise HTTPException(status_code=404, detail="Asset has been deleted")
+    if asset.status != "AVAILABLE":
+        raise HTTPException(status_code=404, detail="Asset not found")
     if not path.is_file():
         raise HTTPException(status_code=410, detail="Asset file is missing")
+    disposition = resolve_content_disposition(
+        asset, download=download, preview=preview
+    )
     return FileResponse(
         path,
         media_type=asset.mime_type,
-        filename=asset.original_filename if download else None,
-        content_disposition_type="attachment" if download else "inline",
+        filename=asset.original_filename if disposition == "attachment" else None,
+        content_disposition_type=disposition,
+        headers={"Content-Disposition": "inline"} if disposition == "inline" else None,
     )
 
 

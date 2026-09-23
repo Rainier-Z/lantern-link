@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.database import get_connection
 from app.main import create_app
 from app.repositories.asset_repository import AssetRepository
 from app.services.asset_service import AssetService
@@ -23,6 +24,21 @@ def upload(client: TestClient, headers: dict[str, str], name: str, content: byte
         headers=headers,
         data={"sender": "iphone"},
         files={"file": (name, content, "image/jpeg")},
+    )
+
+
+def upload_generic_file(
+    client: TestClient,
+    headers: dict[str, str],
+    name: str,
+    content: bytes,
+    mime_type: str,
+):
+    return client.post(
+        "/api/assets/files",
+        headers=headers,
+        data={"sender": "pc"},
+        files={"file": (name, content, mime_type)},
     )
 
 
@@ -185,6 +201,76 @@ def test_asset_get_and_download_require_auth_and_preserve_bytes(tmp_path: Path) 
     assert download.status_code == 200, download.text
     assert inline.content == source
     assert download.content == source
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_status"),
+    (
+        ("AVAILABLE", 200),
+        ("MISSING", 410),
+        ("DELETE_PENDING", 404),
+        ("DELETED", 404),
+        ("UNKNOWN", 404),
+    ),
+)
+def test_asset_status_whitelist_serves_only_available_assets(
+    tmp_path: Path, status: str, expected_status: int
+) -> None:
+    client, headers, _ = client_for(tmp_path)
+    asset_id = upload(client, headers, "status.jpg", b"image").json()["asset"]["id"]
+
+    with get_connection(tmp_path / "rainier.db") as connection:
+        connection.execute("UPDATE assets SET status = ? WHERE id = ?", (status, asset_id))
+    response = client.get(f"/api/assets/{asset_id}", headers=headers)
+    assert response.status_code == expected_status, (status, response.text)
+
+
+def test_image_defaults_inline_and_download_is_attachment(tmp_path: Path) -> None:
+    client, headers, _ = client_for(tmp_path)
+    asset_id = upload(client, headers, "picture.jpg", b"image").json()["asset"]["id"]
+
+    normal = client.get(f"/api/assets/{asset_id}", headers=headers)
+    download = client.get(f"/api/assets/{asset_id}?download=1", headers=headers)
+
+    assert normal.headers["content-disposition"].startswith("inline")
+    assert download.headers["content-disposition"].startswith("attachment")
+
+
+def test_pdf_defaults_attachment_and_preview_is_inline(tmp_path: Path) -> None:
+    client, headers, _ = client_for(tmp_path)
+    response = upload_generic_file(client, headers, "document.pdf", b"pdf", "application/pdf")
+    assert response.status_code == 200, response.text
+    asset_id = response.json()["asset"]["id"]
+
+    normal = client.get(f"/api/assets/{asset_id}", headers=headers)
+    preview = client.get(f"/api/assets/{asset_id}?preview=1", headers=headers)
+
+    assert normal.headers["content-disposition"].startswith("attachment")
+    assert preview.headers["content-disposition"].startswith("inline")
+
+
+def test_html_defaults_attachment_and_preview_is_unsupported(tmp_path: Path) -> None:
+    client, headers, _ = client_for(tmp_path)
+    response = upload_generic_file(client, headers, "notes.html", b"<h1>Hi</h1>", "text/html")
+    assert response.status_code == 200, response.text
+    asset_id = response.json()["asset"]["id"]
+
+    normal = client.get(f"/api/assets/{asset_id}", headers=headers)
+    preview = client.get(f"/api/assets/{asset_id}?preview=1", headers=headers)
+
+    assert normal.headers["content-disposition"].startswith("attachment")
+    assert preview.status_code == 415
+
+
+def test_asset_download_and_preview_flags_are_mutually_exclusive(tmp_path: Path) -> None:
+    client, headers, _ = client_for(tmp_path)
+    asset_id = upload(client, headers, "flags.jpg", b"image").json()["asset"]["id"]
+
+    response = client.get(
+        f"/api/assets/{asset_id}?download=1&preview=1", headers=headers
+    )
+
+    assert response.status_code == 400
 
 
 def test_upload_errors_return_json_detail(tmp_path: Path) -> None:

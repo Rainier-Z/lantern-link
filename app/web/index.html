@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#0b1523">
     <meta name="description" content="Private text link between your devices.">
     <title>Rainier Link</title>
-    <link rel="stylesheet" href="/style.css?v=0.3.0">
+    <link rel="stylesheet" href="/style.css?v=0.3.1">
   </head>
   <body>
     <main class="app-shell">
@@ -75,9 +75,14 @@
         </div>
       </form>
 
-      <section class="storage-card" aria-label="Local storage">
-        <span>Storage</span>
-        <strong id="storage-stats">Loading…</strong>
+      <section class="storage-card" id="storage-stats" aria-label="Local storage">
+        <h2 class="storage-heading">Storage</h2>
+        <div class="storage-grid" aria-live="polite">
+          <div class="storage-stat"><span>Total</span><strong id="storage-total">Loading…</strong></div>
+          <div class="storage-stat"><span>Images</span><strong id="storage-images">Loading…</strong></div>
+          <div class="storage-stat"><span>Files</span><strong id="storage-files">Loading…</strong></div>
+          <div class="storage-stat"><span>Assets</span><strong id="storage-assets">Loading…</strong></div>
+        </div>
       </section>
 
       <section class="pairing-card" id="pairing-card" aria-label="iPhone pairing">
@@ -105,6 +110,6 @@
       <a class="modal-download" id="modal-download" href="#">Download</a>
     </dialog>
 
-    <script src="/app.js?v=0.3.0" defer></script>
+    <script src="/app.js?v=0.3.1" defer></script>
   </body>
 </html>

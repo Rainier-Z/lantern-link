@@ -215,8 +215,12 @@ h2 { margin-bottom: 12px; font-size: clamp(1.05rem, 2.2vw, 1.3rem); letter-spaci
 .qr-frame img { display: block; width: 112px; height: 112px; padding: 7px; border-radius: var(--radius); background: #f2f7f9; object-fit: contain; }
 .qr-frame figcaption { color: var(--quiet); font-size: 0.63rem; text-align: center; }
 .pairing-card.is-unavailable { display: none; }
-.storage-card { display: flex; justify-content: space-between; margin-top: 14px; padding: 11px 14px; border: 1px solid var(--line); border-radius: var(--radius); color: var(--muted); background: var(--surface); font-size: .76rem; }
-.storage-card strong { color: var(--ink); font-weight: 600; }
+.storage-card { margin-top: 14px; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius); color: var(--muted); background: var(--surface); box-shadow: var(--shadow); }
+.storage-heading { margin: 0 0 12px; color: var(--ink); font-size: .78rem; font-weight: 650; }
+.storage-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.storage-stat { display: grid; gap: 5px; min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: #fafbfd; }
+.storage-stat span { color: var(--quiet); font-size: .66rem; letter-spacing: .04em; }
+.storage-stat strong { overflow-wrap: anywhere; color: var(--ink); font-size: .9rem; font-weight: 650; }
 .app-version { margin-top: 18px; color: var(--quiet); font-size: .68rem; letter-spacing: .04em; text-align: center; }
 .image-modal { width: min(92vw, 920px); max-height: 92dvh; padding: 16px; border: 0; border-radius: var(--radius); background: var(--surface); box-shadow: 0 12px 50px rgba(0,0,0,.25); }
 .image-modal::backdrop { background: rgba(25, 35, 50, .62); }
@@ -240,6 +244,14 @@ h2 { margin-bottom: 12px; font-size: clamp(1.05rem, 2.2vw, 1.3rem); letter-spaci
   .send-button { padding-inline: 15px; }
   .pairing-card { margin-top: 18px; padding: 16px; }
   .qr-frame { display: none; }
+}
+
+@media (max-width: 768px) {
+  .storage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 380px) {
+  .storage-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (prefers-reduced-motion: reduce) {

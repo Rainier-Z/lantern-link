@@ -138,9 +138,11 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
     """
 
     if data_dir is None:
+        initialize_database()
         service = message_service
     else:
         database_path = Path(data_dir) / "rainier.db"
+        initialize_database(database_path)
         service = MessageService(MessageRepository(database_path))
     asset_bound_service = asset_service if data_dir is None else AssetService(database_path)
 

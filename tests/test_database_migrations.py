@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.core.database import get_connection, initialize_database, migrate_database
 from app.repositories.asset_repository import AssetRepository
+from app.repositories.message_repository import MessageRepository
 
 
 def _create_v02_database(database_path: Path, data_dir: Path) -> bytes:
@@ -153,14 +154,26 @@ def test_new_database_starts_at_schema_version_three(tmp_path: Path) -> None:
     assert "'file'" in schema
 
 
-def test_asset_repository_construction_does_not_migrate_schema(tmp_path: Path) -> None:
-    database_path = tmp_path / "legacy.db"
+def test_repository_construction_does_not_migrate_schema(tmp_path: Path) -> None:
+    database_path = tmp_path / "rainier.db"
     _create_v02_database(database_path, tmp_path)
 
     AssetRepository(database_path)
+    MessageRepository(database_path)
 
     with get_connection(database_path) as connection:
         schema = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
         ).fetchone()[0]
         assert "'file'" not in schema
+
+    from app.main import create_app
+
+    create_app(data_dir=tmp_path)
+
+    with get_connection(database_path) as connection:
+        schema = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
+        ).fetchone()[0]
+        assert "'file'" in schema
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3

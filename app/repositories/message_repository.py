@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from app.core.database import DATABASE_PATH, get_connection, initialize_database
+from app.core.database import DATABASE_PATH, get_connection
 from app.models.message import Message, MessageCreate
 from app.repositories.asset_repository import AssetRepository
 
@@ -47,7 +47,6 @@ class MessageRepository:
 
     def __init__(self, database_path: Path | str | None = None) -> None:
         self.database_path = Path(database_path) if database_path else DATABASE_PATH
-        initialize_database(self.database_path)
 
     def create(
         self,

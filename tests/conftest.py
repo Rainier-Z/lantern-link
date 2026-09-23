@@ -1,4 +1,4 @@
-"""Shared fixtures for the Rainier Link HTTP API tests."""
+"""Shared fixtures for the private_send HTTP API tests."""
 
 from __future__ import annotations
 

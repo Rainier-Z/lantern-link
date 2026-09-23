@@ -1,1 +1,1 @@
-"""Rainier Link application package."""
+"""private_send application package."""

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import sqlite3
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import resolve_database_path
 from app.core.database import get_connection, initialize_database, migrate_database
 from app.repositories.asset_repository import AssetRepository
 from app.repositories.message_repository import MessageRepository
@@ -86,6 +89,7 @@ def _create_v02_database(database_path: Path, data_dir: Path) -> bytes:
                 ),
             ],
         )
+    connection.close()
     return payload
 
 
@@ -116,11 +120,13 @@ def test_v02_database_migrates_idempotently_and_remains_usable(tmp_path: Path) -
         foreign_key = connection.execute("PRAGMA foreign_key_list(messages)").fetchone()
         assert foreign_key["table"] == "assets"
         assert foreign_key["from"] == "asset_id"
+    connection.close()
 
     migrate_database(database_path)
     with get_connection(database_path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         assert connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 2
+    connection.close()
 
     from app.main import create_app
 
@@ -166,14 +172,130 @@ def test_repository_construction_does_not_migrate_schema(tmp_path: Path) -> None
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
         ).fetchone()[0]
         assert "'file'" not in schema
+    connection.close()
 
     from app.main import create_app
 
     create_app(data_dir=tmp_path)
 
-    with get_connection(database_path) as connection:
+    migrated_database_path = tmp_path / "private_send.db"
+    with get_connection(migrated_database_path) as connection:
         schema = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
         ).fetchone()[0]
         assert "'file'" in schema
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_create_app_migrates_legacy_database_name_and_keeps_history(
+    tmp_path: Path,
+) -> None:
+    legacy_database = tmp_path / "rainier.db"
+    private_database = tmp_path / "private_send.db"
+    _create_v02_database(legacy_database, tmp_path)
+
+    from app.main import create_app
+
+    application = create_app(data_dir=tmp_path)
+
+    assert private_database.is_file()
+    assert not legacy_database.exists()
+    with TestClient(application) as client:
+        response = client.get(
+            "/api/messages",
+            headers={"Authorization": f"Bearer {application.state.token}"},
+        )
+    assert response.status_code == 200, response.text
+    assert [item["id"] for item in response.json()["messages"]] == ["legacy-text"]
+    with get_connection(private_database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_create_app_uses_existing_private_database(tmp_path: Path) -> None:
+    private_database = tmp_path / "private_send.db"
+    initialize_database(private_database)
+
+    from app.main import create_app
+
+    application = create_app(data_dir=tmp_path)
+    with TestClient(application) as client:
+        created = client.post(
+            "/api/messages",
+            headers={"Authorization": f"Bearer {application.state.token}"},
+            json={"sender": "pc", "type": "text", "content": "current db"},
+        )
+    assert created.status_code == 200, created.text
+    assert private_database.exists()
+    assert not (tmp_path / "rainier.db").exists()
+
+
+def test_create_app_prefers_private_database_and_retains_legacy_file(
+    tmp_path: Path, caplog,
+) -> None:
+    private_database = tmp_path / "private_send.db"
+    legacy_database = tmp_path / "rainier.db"
+    initialize_database(private_database)
+    _create_v02_database(legacy_database, tmp_path)
+    legacy_bytes_before = legacy_database.read_bytes()
+
+    from app.main import create_app
+
+    with caplog.at_level(logging.WARNING):
+        application = create_app(data_dir=tmp_path)
+    with TestClient(application) as client:
+        created = client.post(
+            "/api/messages",
+            headers={"Authorization": f"Bearer {application.state.token}"},
+            json={"sender": "pc", "type": "text", "content": "private db"},
+        )
+        history = client.get(
+            "/api/messages",
+            headers={"Authorization": f"Bearer {application.state.token}"},
+        )
+
+    assert created.status_code == 200, created.text
+    assert [item["content"] for item in history.json()["messages"]] == ["private db"]
+    assert legacy_database.read_bytes() == legacy_bytes_before
+    assert any(
+        "both private_send.db and legacy rainier.db exist" in record.message.lower()
+        for record in caplog.records
+    )
+
+
+def test_database_path_race_uses_file_migrated_by_another_starter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy_database = tmp_path / "rainier.db"
+    private_database = tmp_path / "private_send.db"
+    legacy_database.write_bytes(b"legacy database")
+
+    def concurrent_replace(self: Path, target: Path) -> Path:
+        assert self == legacy_database
+        assert target == private_database
+        target.write_bytes(b"migrated by another starter")
+        self.unlink()
+        raise FileNotFoundError(self)
+
+    monkeypatch.setattr(Path, "replace", concurrent_replace)
+
+    assert resolve_database_path(tmp_path) == private_database
+    assert private_database.read_bytes() == b"migrated by another starter"
+    assert not legacy_database.exists()
+
+
+def test_database_path_migration_reraises_when_current_file_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy_database = tmp_path / "rainier.db"
+    legacy_database.write_bytes(b"legacy database")
+
+    def failed_replace(self: Path, target: Path) -> Path:
+        raise FileNotFoundError(self)
+
+    monkeypatch.setattr(Path, "replace", failed_replace)
+
+    with pytest.raises(FileNotFoundError):
+        resolve_database_path(tmp_path)
+
+    assert legacy_database.exists()
+    assert not (tmp_path / "private_send.db").exists()

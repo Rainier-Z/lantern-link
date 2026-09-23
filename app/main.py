@@ -13,8 +13,8 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.messages import router as messages_router
 from app.api.assets import router as assets_router
+from app.core.config import HOST, PORT, WEB_DIR, resolve_database_path
 from app.core.database import initialize_database
-from app.core.config import HOST, PORT, WEB_DIR
 from app.core.network import build_service_url, get_lan_ip
 from app.core.security import (
     SESSION_COOKIE_NAME,
@@ -32,7 +32,7 @@ initialize_database()
 
 STATIC_NO_CACHE_PATHS = {"/", "/app.js", "/style.css"}
 
-app = FastAPI(title="Rainier Link", version=APP_VERSION)
+app = FastAPI(title="private_send", version=APP_VERSION)
 app.state.token = get_access_token()
 app.state.message_service = message_service
 app.state.asset_service = asset_service
@@ -62,7 +62,7 @@ configure_cache_policy(app)
 def health() -> dict[str, str]:
     """Return a lightweight service liveness response."""
 
-    return {"status": "ok", "service": "rainier-link"}
+    return {"status": "ok", "service": "private_send"}
 
 
 @app.get("/api/version")
@@ -122,7 +122,7 @@ def root(request: Request, token: str | None = None):
     index_path = WEB_DIR / "index.html"
     if index_path.is_file():
         return Response(content=index_path.read_bytes(), media_type="text/html")
-    return {"service": "rainier-link", "status": "online"}
+    return {"service": "private_send", "status": "online"}
 
 
 if WEB_DIR.is_dir():
@@ -138,15 +138,16 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
     """
 
     if data_dir is None:
-        initialize_database()
+        database_path = resolve_database_path()
+        initialize_database(database_path)
         service = message_service
     else:
-        database_path = Path(data_dir) / "rainier.db"
+        database_path = resolve_database_path(data_dir)
         initialize_database(database_path)
         service = MessageService(MessageRepository(database_path))
     asset_bound_service = asset_service if data_dir is None else AssetService(database_path)
 
-    application = FastAPI(title="Rainier Link", version=APP_VERSION)
+    application = FastAPI(title="private_send", version=APP_VERSION)
     application.state.token = get_access_token()
     application.state.message_service = service
     application.state.asset_service = asset_bound_service

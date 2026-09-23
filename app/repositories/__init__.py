@@ -1,1 +1,1 @@
-"""Persistence repositories for Rainier Link."""
+"""Persistence repositories for private_send."""

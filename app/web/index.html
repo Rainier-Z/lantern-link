@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="theme-color" content="#0b1523">
     <meta name="description" content="Private text link between your devices.">
-    <title>Rainier Link</title>
-    <link rel="stylesheet" href="/style.css?v=0.3.1">
+    <title>private_send</title>
+    <link rel="stylesheet" href="/style.css?v=0.3.2">
   </head>
   <body>
     <main class="app-shell">
@@ -15,7 +15,7 @@
           <span class="brand-mark" aria-hidden="true"></span>
           <div>
             <p class="eyebrow">Private device link</p>
-            <h1>Rainier Link</h1>
+            <h1>private_send</h1>
           </div>
         </div>
 
@@ -62,11 +62,11 @@
           autocomplete="off"
           spellcheck="true"
         ></textarea>
-        <div class="upload-queue" id="upload-queue" aria-live="polite" hidden></div>
+        <div class="composer-batch" id="composer-batch" aria-live="polite" hidden></div>
         <div class="composer-footer">
           <div class="file-pickers">
-            <label class="image-picker" for="image-input">Image</label>
-            <label class="image-picker file-picker" for="file-input">File</label>
+            <button class="image-picker" id="image-pick-button" type="button">Image</button>
+            <button class="image-picker file-picker" id="file-pick-button" type="button">File</button>
           </div>
           <input class="sr-only" id="image-input" type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif" multiple>
           <input class="sr-only" id="file-input" type="file" multiple>
@@ -74,16 +74,6 @@
           <button class="send-button" id="send-button" type="submit">Send <span class="send-arrow" aria-hidden="true">↗</span></button>
         </div>
       </form>
-
-      <section class="storage-card" id="storage-stats" aria-label="Local storage">
-        <h2 class="storage-heading">Storage</h2>
-        <div class="storage-grid" aria-live="polite">
-          <div class="storage-stat"><span>Total</span><strong id="storage-total">Loading…</strong></div>
-          <div class="storage-stat"><span>Images</span><strong id="storage-images">Loading…</strong></div>
-          <div class="storage-stat"><span>Files</span><strong id="storage-files">Loading…</strong></div>
-          <div class="storage-stat"><span>Assets</span><strong id="storage-assets">Loading…</strong></div>
-        </div>
-      </section>
 
       <section class="pairing-card" id="pairing-card" aria-label="iPhone pairing">
         <div class="pairing-copy">
@@ -94,13 +84,13 @@
           <p class="pairing-note" id="pairing-note">Use the camera app on iPhone, then open the link in Safari.</p>
         </div>
         <figure class="qr-frame" id="qr-frame">
-          <img id="pairing-qr" alt="QR code for opening Rainier Link on iPhone">
+          <img id="pairing-qr" alt="QR code for opening private_send on iPhone">
           <figcaption>Open with iPhone camera</figcaption>
         </figure>
       </section>
 
       <footer class="app-version" aria-live="polite">
-        <span id="app-version">Rainier Link</span>
+        <span id="app-version">private_send</span>
       </footer>
     </main>
 
@@ -110,6 +100,6 @@
       <a class="modal-download" id="modal-download" href="#">Download</a>
     </dialog>
 
-    <script src="/app.js?v=0.3.1" defer></script>
+    <script src="/app.js?v=0.3.2" defer></script>
   </body>
 </html>

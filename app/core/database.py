@@ -6,9 +6,10 @@ import sqlite3
 from pathlib import Path
 from typing import Iterator
 
+from app.core.config import PROJECT_ROOT, resolve_database_path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATABASE_PATH = PROJECT_ROOT / "data" / "rainier.db"
+
+DATABASE_PATH = resolve_database_path(PROJECT_ROOT / "data")
 
 
 def get_connection(path: Path | str | None = None) -> sqlite3.Connection:

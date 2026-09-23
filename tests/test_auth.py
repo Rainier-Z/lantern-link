@@ -6,6 +6,10 @@ from fastapi.testclient import TestClient
 from app.core.security import SESSION_COOKIE_NAME, get_access_token
 
 
+def test_session_cookie_uses_private_send_name():
+    assert SESSION_COOKIE_NAME == "private_send_session"
+
+
 @pytest.mark.parametrize("method", ["get", "post"])
 def test_missing_token_is_rejected_with_401(client, method, message_payload):
     request = getattr(client, method)

@@ -110,13 +110,13 @@ def test_delete_pending_asset_is_retried_on_service_startup(
     deleted = client.delete(f"/api/messages/{message_id}", headers=headers)
 
     assert deleted.status_code == 200, deleted.text
-    pending = AssetRepository(tmp_path / "rainier.db").get(asset_id)
+    pending = AssetRepository(tmp_path / "private_send.db").get(asset_id)
     assert pending is not None
     assert pending.status == "DELETE_PENDING"
     assert asset_path.is_file()
 
     monkeypatch.setattr(Path, "unlink", original_unlink)
-    recovered = AssetService(tmp_path / "rainier.db")
+    recovered = AssetService(tmp_path / "private_send.db")
 
     completed = recovered.repository.get(asset_id)
     assert completed is not None
@@ -219,7 +219,7 @@ def test_asset_status_whitelist_serves_only_available_assets(
     client, headers, _ = client_for(tmp_path)
     asset_id = upload(client, headers, "status.jpg", b"image").json()["asset"]["id"]
 
-    with get_connection(tmp_path / "rainier.db") as connection:
+    with get_connection(tmp_path / "private_send.db") as connection:
         connection.execute("UPDATE assets SET status = ? WHERE id = ?", (status, asset_id))
     response = client.get(f"/api/assets/{asset_id}", headers=headers)
     assert response.status_code == expected_status, (status, response.text)
@@ -284,7 +284,7 @@ def test_mutually_exclusive_flags_precede_asset_lookup_and_status(
 
     actual_statuses = []
     for status in ("AVAILABLE", "MISSING", "DELETE_PENDING", "DELETED"):
-        with get_connection(tmp_path / "rainier.db") as connection:
+        with get_connection(tmp_path / "private_send.db") as connection:
             connection.execute(
                 "UPDATE assets SET status = ? WHERE id = ?", (status, asset_id)
             )

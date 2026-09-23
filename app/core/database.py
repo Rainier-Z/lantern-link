@@ -22,44 +22,107 @@ def get_connection(path: Path | str | None = None) -> sqlite3.Connection:
     return connection
 
 
+def _create_v3_schema(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS assets (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            original_filename TEXT NOT NULL,
+            stored_filename TEXT NOT NULL,
+            extension TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            sha256 TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'STAGING',
+            created_at TEXT NOT NULL,
+            deleted_at TEXT
+        )"""
+    )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS messages (
+            id TEXT PRIMARY KEY,
+            sender TEXT NOT NULL CHECK (sender IN ('pc', 'iphone')),
+            type TEXT NOT NULL CHECK (type IN ('text', 'image', 'file')),
+            text_content TEXT,
+            asset_id TEXT REFERENCES assets(id),
+            status TEXT NOT NULL DEFAULT 'SENT',
+            created_at TEXT NOT NULL,
+            deleted_at TEXT
+        )"""
+    )
+    connection.execute(
+        """CREATE INDEX IF NOT EXISTS idx_messages_created_at
+           ON messages (created_at DESC, id DESC)"""
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_asset_id ON messages (asset_id)"
+    )
+
+
+def migrate_database(path: Path | str | None = None) -> None:
+    """Create schema version 3 or upgrade an existing v0.2 database."""
+
+    connection = get_connection(path)
+    try:
+        schema = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
+        ).fetchone()
+        if schema is None:
+            _create_v3_schema(connection)
+            connection.execute("PRAGMA user_version = 3")
+            return
+
+        sql = (schema[0] or "").lower()
+        if "'file'" in sql or '"file"' in sql:
+            connection.execute("PRAGMA user_version = 3")
+            return
+
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            connection.execute("ALTER TABLE messages RENAME TO messages_v02")
+            connection.execute(
+                """CREATE TABLE messages (
+                    id TEXT PRIMARY KEY,
+                    sender TEXT NOT NULL CHECK (sender IN ('pc', 'iphone')),
+                    type TEXT NOT NULL CHECK (type IN ('text', 'image', 'file')),
+                    text_content TEXT,
+                    asset_id TEXT REFERENCES assets(id),
+                    status TEXT NOT NULL DEFAULT 'SENT',
+                    created_at TEXT NOT NULL,
+                    deleted_at TEXT
+                )"""
+            )
+            connection.execute(
+                """INSERT INTO messages
+                   (id, sender, type, text_content, asset_id, status, created_at, deleted_at)
+                   SELECT id, sender, type, text_content, asset_id, status, created_at, deleted_at
+                     FROM messages_v02"""
+            )
+            connection.execute("DROP TABLE messages_v02")
+            connection.execute(
+                """CREATE INDEX idx_messages_created_at
+                   ON messages (created_at DESC, id DESC)"""
+            )
+            connection.execute(
+                "CREATE INDEX idx_messages_asset_id ON messages (asset_id)"
+            )
+            connection.execute("PRAGMA user_version = 3")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.execute("PRAGMA foreign_keys = ON")
+    finally:
+        connection.close()
+
+
 def initialize_database(path: Path | str | None = None) -> None:
-    """Create the v0.2 metadata schema if it does not already exist."""
+    """Initialize or migrate a database to the current schema version."""
 
-    with get_connection(path) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS assets (
-                id TEXT PRIMARY KEY,
-                kind TEXT NOT NULL,
-                original_filename TEXT NOT NULL,
-                stored_filename TEXT NOT NULL,
-                extension TEXT NOT NULL,
-                mime_type TEXT NOT NULL,
-                size INTEGER NOT NULL,
-                sha256 TEXT NOT NULL,
-                relative_path TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'STAGING',
-                created_at TEXT NOT NULL,
-                deleted_at TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS messages (
-                id TEXT PRIMARY KEY,
-                sender TEXT NOT NULL CHECK (sender IN ('pc', 'iphone')),
-                type TEXT NOT NULL CHECK (type IN ('text', 'image')),
-                text_content TEXT,
-                asset_id TEXT REFERENCES assets(id),
-                status TEXT NOT NULL DEFAULT 'SENT',
-                created_at TEXT NOT NULL,
-                deleted_at TEXT
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_messages_created_at
-                ON messages (created_at DESC, id DESC);
-            CREATE INDEX IF NOT EXISTS idx_messages_asset_id
-                ON messages (asset_id);
-            """
-        )
+    migrate_database(path)
 
 
 def database_connection(path: Path | str | None = None) -> Iterator[sqlite3.Connection]:

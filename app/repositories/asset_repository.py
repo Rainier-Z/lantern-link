@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.core.database import DATABASE_PATH, get_connection, initialize_database
+from app.core.database import DATABASE_PATH, get_connection
 from app.models.asset import Asset
 
 
@@ -42,68 +42,6 @@ class AssetRepository:
 
     def __init__(self, database_path: Path | str | None = None) -> None:
         self.database_path = Path(database_path) if database_path else DATABASE_PATH
-        initialize_database(self.database_path)
-        self._ensure_file_message_type()
-
-    def _ensure_file_message_type(self) -> None:
-        """Migrate the v0.2 message check constraint to include generic files.
-
-        SQLite cannot alter a CHECK constraint in place.  This idempotent
-        migration preserves every existing message and index while allowing
-        the v0.3 ``file`` message type.  It is kept here so callers that
-        instantiate the asset repository get a compatible schema without a
-        second migration framework.
-        """
-
-        with get_connection(self.database_path) as connection:
-            schema = connection.execute(
-                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
-            ).fetchone()
-            sql = (schema[0] or "").lower() if schema else ""
-            if "'file'" in sql or '"file"' in sql:
-                return
-            connection.execute("PRAGMA foreign_keys = OFF")
-            try:
-                connection.execute("ALTER TABLE messages RENAME TO messages_v02")
-                connection.execute(
-                    """
-                    CREATE TABLE messages (
-                        id TEXT PRIMARY KEY,
-                        sender TEXT NOT NULL CHECK (sender IN ('pc', 'iphone')),
-                        type TEXT NOT NULL CHECK (type IN ('text', 'image', 'file')),
-                        text_content TEXT,
-                        asset_id TEXT REFERENCES assets(id),
-                        status TEXT NOT NULL DEFAULT 'SENT',
-                        created_at TEXT NOT NULL,
-                        deleted_at TEXT
-                    )
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO messages
-                        (id, sender, type, text_content, asset_id, status,
-                         created_at, deleted_at)
-                    SELECT id, sender, type, text_content, asset_id, status,
-                           created_at, deleted_at
-                      FROM messages_v02
-                    """
-                )
-                connection.execute("DROP TABLE messages_v02")
-                connection.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_messages_created_at
-                        ON messages (created_at DESC, id DESC)
-                    """
-                )
-                connection.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_messages_asset_id
-                        ON messages (asset_id)
-                    """
-                )
-            finally:
-                connection.execute("PRAGMA foreign_keys = ON")
 
     def get(self, asset_id: str) -> Asset | None:
         with get_connection(self.database_path) as connection:

@@ -10,13 +10,13 @@ from app.core import version as version_module
 from app.main import create_app
 
 
-def test_version_endpoint_reports_v030_and_runtime_build(tmp_path: Path) -> None:
+def test_version_endpoint_reports_v031_and_runtime_build(tmp_path: Path) -> None:
     with TestClient(create_app(data_dir=tmp_path)) as client:
         response = client.get("/api/version")
 
     assert response.status_code == 200
     assert response.json() == {
-        "version": "0.3.0",
+        "version": "0.3.1",
         "build": version_module.APP_BUILD,
     }
     assert response.json()["build"]
@@ -25,7 +25,7 @@ def test_version_endpoint_reports_v030_and_runtime_build(tmp_path: Path) -> None
 def test_fastapi_version_matches_application_version(tmp_path: Path) -> None:
     application = create_app(data_dir=tmp_path)
 
-    assert application.version == "0.3.0"
+    assert application.version == "0.3.1"
 
 
 def test_resolve_build_returns_unknown_when_git_is_unavailable(monkeypatch) -> None:

@@ -273,6 +273,34 @@ def test_asset_download_and_preview_flags_are_mutually_exclusive(tmp_path: Path)
     assert response.status_code == 400
 
 
+def test_mutually_exclusive_flags_precede_asset_lookup_and_status(
+    tmp_path: Path,
+) -> None:
+    client, headers, _ = client_for(tmp_path)
+    asset_id = upload(client, headers, "flags.jpg", b"image").json()["asset"]["id"]
+
+    unauthenticated = client.get("/api/assets/unknown?download=1&preview=1")
+    assert unauthenticated.status_code == 401
+
+    actual_statuses = []
+    for status in ("AVAILABLE", "MISSING", "DELETE_PENDING", "DELETED"):
+        with get_connection(tmp_path / "rainier.db") as connection:
+            connection.execute(
+                "UPDATE assets SET status = ? WHERE id = ?", (status, asset_id)
+            )
+        response = client.get(
+            f"/api/assets/{asset_id}?download=1&preview=1", headers=headers
+        )
+        actual_statuses.append(response.status_code)
+
+    missing_id = client.get(
+        "/api/assets/unknown?download=1&preview=1", headers=headers
+    )
+    actual_statuses.append(missing_id.status_code)
+
+    assert actual_statuses == [400, 400, 400, 400, 400]
+
+
 def test_upload_errors_return_json_detail(tmp_path: Path) -> None:
     client, headers, _ = client_for(tmp_path)
     response = client.post(

@@ -17,16 +17,20 @@ def _service_for(request: Request) -> AssetService:
     return getattr(request.app.state, "asset_service", asset_service)
 
 
-def resolve_content_disposition(
-    asset: Asset, *, download: bool, preview: bool
-) -> str:
-    """Choose whether an asset is served inline or as a download attachment."""
-
+def _validate_disposition_flags(*, download: bool, preview: bool) -> None:
     if download and preview:
         raise HTTPException(
             status_code=400,
             detail="download and preview cannot be used together",
         )
+
+
+def resolve_content_disposition(
+    asset: Asset, *, download: bool, preview: bool
+) -> str:
+    """Choose whether an asset is served inline or as a download attachment."""
+
+    _validate_disposition_flags(download=download, preview=preview)
     if download:
         return "attachment"
     if asset.kind == "file":
@@ -83,6 +87,7 @@ def get_asset(
 ) -> FileResponse:
     """Stream an available asset with its resolved content disposition."""
 
+    _validate_disposition_flags(download=download, preview=preview)
     result = _service_for(request).get_asset_file(asset_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Asset not found")

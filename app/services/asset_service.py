@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import shutil
 import sqlite3
 import stat
 from dataclasses import dataclass, field
@@ -14,8 +15,8 @@ from uuid import uuid4
 
 from fastapi import UploadFile
 
-from app.core.config import PROJECT_ROOT
-from app.core.database import DATABASE_PATH, get_connection, initialize_database
+from app.core.config import resolve_user_files_dir
+from app.core.database import DATABASE_PATH, get_connection
 from app.models.asset import Asset, StorageStats
 from app.models.message import Message
 from app.repositories.asset_repository import AssetRepository, asset_from_row
@@ -112,20 +113,285 @@ def _serialize_datetime(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
+def _normalize_archive_filename(filename: str) -> str:
+    """Return one safe basename suitable for the dated user-file archive."""
+
+    name = filename.replace("\\", "/").split("/")[-1].strip()
+    name = "".join(
+        "_" if ord(character) < 32 or character in '<>:"/\\|?*' else character
+        for character in name
+    ).rstrip(" .")
+    if name in {"", ".", ".."}:
+        name = "upload"
+    device_name = name.split(".", maxsplit=1)[0].casefold()
+    if device_name in {"con", "prn", "aux", "nul"} or (
+        len(device_name) == 4
+        and device_name[:3] in {"com", "lpt"}
+        and device_name[3] in "123456789"
+    ):
+        name = f"_{name}"
+    return name
+
+
 class AssetService:
     """Own filesystem and transaction boundaries for generic assets."""
 
-    def __init__(self, database_path: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        database_path: Path | str | None = None,
+        *,
+        staging_dir: Path | str | None = None,
+        user_files_dir: Path | str | None = None,
+    ) -> None:
         self.database_path = Path(database_path) if database_path else DATABASE_PATH
         self.data_dir = self.database_path.parent
-        self.staging_dir = self.data_dir / "staging"
-        self.assets_dir = self.data_dir / "assets"
+        self.staging_dir = Path(staging_dir) if staging_dir else self.data_dir / "staging"
+        self.user_files_dir = (
+            Path(user_files_dir)
+            if user_files_dir
+            else resolve_user_files_dir() if database_path is None else self.data_dir
+        )
+        self.assets_dir = self.user_files_dir / "assets"
         self.staging_dir.mkdir(parents=True, exist_ok=True)
         self.assets_dir.mkdir(parents=True, exist_ok=True)
-        initialize_database(self.database_path)
         self.repository = AssetRepository(self.database_path)
-        self.recover_delete_pending()
-        self.scan_staging()
+        if database_path is not None:
+            self.recover_archive_pending()
+            self.import_legacy_assets()
+
+    def _archive_directory(self, created_at: datetime) -> Path:
+        date_directory = self.user_files_dir / created_at.strftime("%Y-%m-%d")
+        date_directory.mkdir(parents=True, exist_ok=True)
+        user_files_root = self.user_files_dir.resolve()
+        if (
+            date_directory.is_symlink()
+            or date_directory.resolve() == user_files_root
+            or user_files_root not in date_directory.resolve().parents
+        ):
+            raise RuntimeError("Archive date directory escapes the user-files root")
+        return date_directory
+
+    @staticmethod
+    def _sync_directory(directory: Path) -> bool:
+        # Windows 不支持通过 Python 的目录 fd 做 fsync；仍同步文件内容，
+        # 并把 staging 保留到 AVAILABLE 提交。此回退不承诺突然断电时目录项持久化。
+        if os.name == "nt":
+            return False
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        return True
+
+    def _archive_temporary_path(
+        self, asset_id: str, created_at: datetime, filename: str
+    ) -> Path:
+        operation = f"{asset_id}\n{created_at.isoformat()}\n{filename}"
+        key = hashlib.sha256(operation.encode("utf-8")).hexdigest()
+        return self._archive_directory(created_at) / f".private_send_{key}.partial"
+
+    @staticmethod
+    def _remove_archive_temporary(path: Path) -> None:
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            return
+        if not stat.S_ISREG(mode):
+            raise RuntimeError("Pending archive temporary path is not a regular file")
+        path.unlink()
+
+    def _reserve_archive_filename(
+        self, connection: sqlite3.Connection, created_at: datetime, filename: str
+    ) -> str:
+        """Reserve a destination while the caller holds BEGIN IMMEDIATE."""
+
+        directory = self._archive_directory(created_at)
+        reservations = {
+            (datetime.fromisoformat(row["created_at"]).strftime("%Y-%m-%d"),
+             row["stored_filename"])
+            for row in connection.execute(
+                "SELECT created_at, stored_filename FROM assets "
+                "WHERE status = 'ARCHIVE_PENDING'"
+            )
+        }
+        filename_path = Path(filename)
+        collision_number = 0
+        while True:
+            candidate = filename if collision_number == 0 else (
+                f"{filename_path.stem} ({collision_number}){filename_path.suffix}"
+            )
+            destination = directory / candidate
+            if not (
+                destination.exists() or destination.is_symlink()
+                or (directory.name, candidate) in reservations
+            ):
+                return candidate
+            collision_number += 1
+
+    @staticmethod
+    def _file_digest(path: Path) -> str:
+        with path.open("rb") as source:
+            return hashlib.file_digest(source, "sha256").hexdigest()
+
+    def _place_in_archive(
+        self, source_path: Path, created_at: datetime, filename: str, asset_id: str
+    ) -> Path:
+        """Publish only the committed reservation; retries reuse the same file."""
+
+        if _normalize_archive_filename(filename) != filename:
+            raise RuntimeError("Invalid archive filename")
+        date_directory = self._archive_directory(created_at)
+        destination = date_directory / filename
+        temporary_path = self._archive_temporary_path(asset_id, created_at, filename)
+        if destination.exists() or destination.is_symlink():
+            if (
+                destination.is_symlink() or not destination.is_file()
+                or self._file_digest(destination) != self._file_digest(source_path)
+            ):
+                raise RuntimeError("Reserved archive destination has different content")
+            self._sync_directory(date_directory)
+            self._remove_archive_temporary(temporary_path)
+            self._sync_directory(date_directory)
+            return destination
+
+        if temporary_path.exists() or temporary_path.is_symlink():
+            if temporary_path.is_symlink() or not temporary_path.is_file():
+                raise RuntimeError("Pending archive temporary path is not a regular file")
+            if self._file_digest(temporary_path) != self._file_digest(source_path):
+                # 只清理由这条 pending 记录确定的临时副本，完整源文件仍可重试。
+                self._remove_archive_temporary(temporary_path)
+        if not temporary_path.exists():
+            with temporary_path.open("xb") as temporary:
+                with source_path.open("rb") as source:
+                    shutil.copyfileobj(source, temporary, CHUNK_SIZE)
+                temporary.flush()
+        with temporary_path.open("r+b") as temporary:
+            os.fsync(temporary.fileno())
+        self._sync_directory(self.user_files_dir)
+        try:
+            os.link(temporary_path, destination)
+        except FileExistsError:
+            if (
+                destination.is_symlink() or not destination.is_file()
+                or self._file_digest(destination) != self._file_digest(source_path)
+            ):
+                raise RuntimeError("Reserved archive destination has different content")
+        self._sync_directory(date_directory)
+        self._remove_archive_temporary(temporary_path)
+        self._sync_directory(date_directory)
+        return destination
+
+    @staticmethod
+    def _is_legacy_asset_path(relative_path: str) -> bool:
+        parts = relative_path.replace("\\", "/").split("/")
+        return (
+            len(parts) == 5
+            and parts[0] == "assets"
+            and len(parts[1]) == 4
+            and parts[1].isdigit()
+            and len(parts[2]) == 2
+            and parts[2].isdigit()
+            and len(parts[3]) == 2
+            and parts[3].isdigit()
+            and bool(parts[4])
+            and parts[4] not in {".", ".."}
+        )
+
+    def import_legacy_assets(self) -> list[str]:
+        """Copy legacy date-partitioned assets into the formal archive."""
+
+        imported: list[str] = []
+        for asset in self.repository.list_available():
+            if not self._is_legacy_asset_path(asset.relative_path):
+                continue
+            try:
+                source_path = self.resolve_asset_path(asset)
+                if not source_path.is_file():
+                    continue
+                with get_connection(self.database_path) as connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    filename = self._reserve_archive_filename(
+                        connection, asset.created_at,
+                        _normalize_archive_filename(asset.original_filename),
+                    )
+                    cursor = connection.execute(
+                        "UPDATE assets SET status = 'ARCHIVE_PENDING', stored_filename = ? "
+                        "WHERE id = ? AND status = 'AVAILABLE' AND relative_path = ?",
+                        (filename, asset.id, asset.relative_path),
+                    )
+                if cursor.rowcount != 1:
+                    continue
+                pending = asset.model_copy(update={
+                    "stored_filename": filename, "status": "ARCHIVE_PENDING",
+                })
+                if self._complete_archive(pending):
+                    imported.append(asset.id)
+            except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+                LOGGER.warning(
+                    "Unable to import legacy asset; will retry on next startup "
+                    "(asset_id=%s, error_type=%s)",
+                    asset.id,
+                    type(exc).__name__,
+                )
+        return imported
+
+    def _complete_archive(self, asset: Asset) -> bool:
+        if _normalize_archive_filename(asset.stored_filename) != asset.stored_filename:
+            raise RuntimeError("Invalid archive filename")
+        legacy = self._is_legacy_asset_path(asset.relative_path)
+        source_path = (
+            self.resolve_asset_path(asset) if legacy
+            else self.staging_dir / f"{asset.id}.partial"
+        )
+        if source_path.is_file():
+            if not legacy and (
+                source_path.stat().st_size != asset.size
+                or self._file_digest(source_path) != asset.sha256
+            ):
+                raise RuntimeError("Pending upload content does not match its metadata")
+            destination = self._place_in_archive(
+                source_path, asset.created_at, asset.stored_filename, asset.id
+            )
+        else:
+            destination = self._archive_directory(asset.created_at) / asset.stored_filename
+            if (
+                destination.is_symlink() or not destination.is_file()
+                or destination.stat().st_size != asset.size
+                or self._file_digest(destination) != asset.sha256
+            ):
+                raise RuntimeError("Pending archive has no complete recoverable copy")
+            self._sync_directory(destination.parent)
+            self._remove_archive_temporary(self._archive_temporary_path(
+                asset.id, asset.created_at, asset.stored_filename
+            ))
+            self._sync_directory(destination.parent)
+        completed = self.repository.update_storage_location(
+            asset.id, asset.relative_path, destination.name,
+            destination.relative_to(self.user_files_dir).as_posix(),
+        )
+        if completed and not legacy:
+            source_path.unlink(missing_ok=True)
+        if completed:
+            archived = self.repository.get(asset.id)
+            if archived is not None and archived.status == "DELETE_PENDING":
+                self._complete_delete(archived)
+        return completed
+
+    def recover_archive_pending(self) -> list[str]:
+        """Finish committed archive intents without removing formal user files."""
+
+        completed: list[str] = []
+        for asset in self.repository.list_archive_pending():
+            try:
+                if self._complete_archive(asset):
+                    completed.append(asset.id)
+            except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+                LOGGER.warning(
+                    "Unable to complete pending archive; will retry on next startup "
+                    "(asset_id=%s, error_type=%s)", asset.id, type(exc).__name__,
+                )
+        return completed
 
     def scan_staging(self, now: datetime | None = None) -> list[Path]:
         """Remove stale, regular partial uploads and retain recent ones.
@@ -145,7 +411,14 @@ class AssetService:
         retained: list[Path] = []
         removed = 0
         failures = 0
+        pending_uploads = {
+            f"{asset.id}.partial" for asset in self.repository.list_archive_pending()
+            if not self._is_legacy_asset_path(asset.relative_path)
+        }
         for path in sorted(self.staging_dir.glob("*.partial")):
+            if path.name in pending_uploads:
+                retained.append(path)
+                continue
             try:
                 file_stat = path.lstat()
             except OSError as exc:
@@ -184,29 +457,35 @@ class AssetService:
         return retained
 
     def recover_delete_pending(self) -> list[str]:
-        """Retry only assets already committed as ``DELETE_PENDING``.
-
-        A successful, idempotent unlink is followed by a separate metadata
-        transition to ``DELETED``.  If unlinking fails, the row remains
-        ``DELETE_PENDING`` so the next process startup can retry it.  The
-        asset identifier is used in logs instead of a local filesystem path.
-        """
+        """Retry managed-file deletion while retaining formal date archives."""
 
         completed: list[str] = []
         for asset in self.repository.list_delete_pending():
-            try:
-                self.resolve_asset_path(asset).unlink(missing_ok=True)
-            except OSError as exc:
-                LOGGER.warning(
-                    "Unable to remove pending asset file; will retry on next startup "
-                    "(asset_id=%s, error_type=%s)",
-                    asset.id,
-                    type(exc).__name__,
-                )
-                continue
-            if self.repository.mark_deleted(asset.id, _serialize_datetime(_utc_now())):
+            if self._complete_delete(asset):
                 completed.append(asset.id)
         return completed
+
+    def _complete_delete(self, asset: Asset) -> bool:
+        try:
+            if self._is_legacy_asset_path(asset.relative_path):
+                path = self.user_files_dir.joinpath(
+                    *asset.relative_path.replace("\\", "/").split("/")
+                )
+                managed_root = self.assets_dir.resolve()
+                if (
+                    self.assets_dir.is_symlink()
+                    or managed_root != self.user_files_dir.resolve() / "assets"
+                    or managed_root not in path.resolve().parents
+                ):
+                    raise RuntimeError("Managed asset path escapes its storage root")
+                path.unlink(missing_ok=True)
+            return self.repository.mark_deleted(asset.id, _serialize_datetime(_utc_now()))
+        except (OSError, RuntimeError, sqlite3.Error) as exc:
+            LOGGER.warning(
+                "Unable to complete pending asset deletion; will retry on startup "
+                "(asset_id=%s, error_type=%s)", asset.id, type(exc).__name__,
+            )
+            return False
 
     async def persist_upload(
         self,
@@ -218,7 +497,7 @@ class AssetService:
 
         upload_id = str(uuid4())
         staging_path = self.staging_dir / f"{upload_id}.partial"
-        final_path: Path | None = None
+        preserve_staging = False
         try:
             sender = sender.strip()
             if sender not in {"pc", "iphone"}:
@@ -227,7 +506,7 @@ class AssetService:
             filename = (file.filename or "").strip()
             if not filename:
                 raise UploadError(400, "A file field is required")
-            safe_filename = Path(filename.replace("\\", "/")).name
+            safe_filename = _normalize_archive_filename(filename)
             extension = Path(safe_filename).suffix.lower()
             if not policy.accepts_extension(extension):
                 raise UploadError(415, "Unsupported upload format")
@@ -252,25 +531,30 @@ class AssetService:
                         raise UploadError(413, f"Upload exceeds the {label} limit")
                     digest.update(chunk)
                     output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
             if size <= 0:
                 raise UploadError(400, "Upload cannot be empty")
+            self._sync_directory(self.staging_dir)
             sha256 = digest.hexdigest()
             filename = safe_filename
             created_at = _utc_now()
-            date_dir = self.assets_dir / created_at.strftime("%Y") / created_at.strftime("%m") / created_at.strftime("%d")
-            date_dir.mkdir(parents=True, exist_ok=True)
-            stored_filename = f"{upload_id}{extension}"
-            final_path = date_dir / stored_filename
-            os.replace(staging_path, final_path)
-            relative_path = final_path.relative_to(self.data_dir).as_posix()
             message_id = str(uuid4())
+            preserve_staging = True
             with get_connection(self.database_path) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                stored_filename = self._reserve_archive_filename(
+                    connection, created_at, filename
+                )
+                relative_path = (
+                    Path(created_at.strftime("%Y-%m-%d")) / stored_filename
+                ).as_posix()
                 connection.execute(
                     """
                     INSERT INTO assets
                         (id, kind, original_filename, stored_filename, extension,
                          mime_type, size, sha256, relative_path, status, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'AVAILABLE', ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ARCHIVE_PENDING', ?)
                     """,
                     (
                         upload_id,
@@ -304,6 +588,8 @@ class AssetService:
                 ).fetchone()
             if asset_row is None:
                 raise RuntimeError("Asset metadata was not created")
+            if not self._complete_archive(asset_from_row(asset_row)):
+                raise RuntimeError("Asset archive metadata remains pending")
             message = Message(
                 id=message_id,
                 sender=sender,
@@ -313,11 +599,10 @@ class AssetService:
                 asset_id=upload_id,
                 status="SENT",
             )
-            return message, asset_from_row(asset_row, url=f"/api/assets/{upload_id}")
+            asset = asset_from_row(asset_row, url=f"/api/assets/{upload_id}")
+            return message, asset.model_copy(update={"status": "AVAILABLE"})
         except Exception:
-            if final_path is not None and final_path.is_file():
-                final_path.unlink()
-            if staging_path.is_file():
+            if not preserve_staging and staging_path.is_file():
                 staging_path.unlink()
             raise
         finally:
@@ -334,12 +619,12 @@ class AssetService:
         return await self.persist_upload(file, sender, FILE_POLICY)
 
     def resolve_asset_path(self, asset: Asset) -> Path:
-        """Resolve an internally stored relative path below the data directory."""
+        """Resolve an internally stored relative path below the user-files root."""
 
-        candidate = (self.data_dir / asset.relative_path).resolve()
-        root = self.data_dir.resolve()
+        candidate = (self.user_files_dir / asset.relative_path).resolve()
+        root = self.user_files_dir.resolve()
         if candidate != root and root not in candidate.parents:
-            raise RuntimeError("Asset path escapes the configured data directory")
+            raise RuntimeError("Asset path escapes the configured user-files root")
         return candidate
 
     def get_asset_file(self, asset_id: str) -> tuple[Asset, Path] | None:
@@ -359,9 +644,8 @@ class AssetService:
         return asset, path
 
     def delete_message(self, message_id: str) -> Message | None:
-        """Soft-delete a message and complete deletion of an unreferenced image."""
+        """Delete unreferenced managed files, retaining formal archive files."""
 
-        asset_path: Path | None = None
         asset_id_to_delete: str | None = None
         with get_connection(self.database_path) as connection:
             row = connection.execute(
@@ -385,17 +669,18 @@ class AssetService:
                         "SELECT * FROM assets WHERE id = ?", (asset_id,)
                     ).fetchone()
                     if asset_row is not None:
-                        asset = asset_from_row(asset_row)
-                        asset_path = self.resolve_asset_path(asset)
-                        pending_cursor = connection.execute(
-                            """
-                            UPDATE assets SET status = 'DELETE_PENDING', deleted_at = NULL
-                            WHERE id = ? AND status <> 'DELETED'
-                            """,
-                            (asset_id,),
-                        )
-                        if pending_cursor.rowcount == 1:
+                        if asset_row["status"] == "ARCHIVE_PENDING":
                             asset_id_to_delete = asset_id
+                        else:
+                            pending_cursor = connection.execute(
+                                """
+                                UPDATE assets SET status = 'DELETE_PENDING', deleted_at = NULL
+                                WHERE id = ? AND status <> 'DELETED'
+                                """,
+                                (asset_id,),
+                            )
+                            if pending_cursor.rowcount == 1:
+                                asset_id_to_delete = asset_id
             message = Message(
                 id=row["id"],
                 sender=row["sender"],
@@ -406,21 +691,20 @@ class AssetService:
                 status="DELETED",
                 deleted_at=datetime.fromisoformat(deleted_at),
             )
-        if asset_path is not None and asset_id_to_delete is not None:
-            try:
-                asset_path.unlink(missing_ok=True)
-            except OSError as exc:
-                LOGGER.warning(
-                    "Unable to remove pending asset file; will retry on next startup "
-                    "(asset_id=%s, error_type=%s)",
-                    asset_id_to_delete,
-                    type(exc).__name__,
-                )
-            else:
-                self.repository.mark_deleted(
-                    asset_id_to_delete,
-                    _serialize_datetime(_utc_now()),
-                )
+        if asset_id_to_delete is not None:
+            asset = self.repository.get(asset_id_to_delete)
+            if asset is not None:
+                if asset.status == "ARCHIVE_PENDING":
+                    try:
+                        self._complete_archive(asset)
+                    except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+                        LOGGER.warning(
+                            "Deleted message retains its pending archive for recovery "
+                            "(asset_id=%s, error_type=%s)",
+                            asset.id, type(exc).__name__,
+                        )
+                else:
+                    self._complete_delete(asset)
         return message
 
     def storage_stats(self) -> StorageStats:

@@ -10,10 +10,20 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.config import resolve_database_path
-from app.core.database import get_connection, initialize_database, migrate_database
+from app.core.config import (
+    resolve_app_data_dir,
+    resolve_database_path,
+    resolve_user_files_dir,
+)
+from app.core.database import (
+    DatabaseVersionError,
+    get_connection,
+    initialize_database,
+    migrate_database,
+)
 from app.repositories.asset_repository import AssetRepository
 from app.repositories.message_repository import MessageRepository
+from app.services.asset_service import AssetService
 
 
 def _create_v02_database(database_path: Path, data_dir: Path) -> bytes:
@@ -160,12 +170,158 @@ def test_new_database_starts_at_schema_version_three(tmp_path: Path) -> None:
     assert "'file'" in schema
 
 
+def test_future_database_version_is_refused_without_schema_changes(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "future.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA user_version = 4")
+
+    with pytest.raises(DatabaseVersionError):
+        initialize_database(database_path)
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall() == []
+
+
+def test_bootstrap_copies_legacy_project_data_and_retains_source(
+    tmp_path: Path,
+) -> None:
+    legacy_dir = tmp_path / "legacy-project-data"
+    app_data_dir = tmp_path / "LocalAppData" / "private_send"
+    user_files_dir = tmp_path / "Downloads" / "file_private_send"
+    legacy_database = legacy_dir / "private_send.db"
+    _create_v02_database(legacy_database, legacy_dir)
+    source_bytes = legacy_database.read_bytes()
+    source_asset = legacy_dir / "assets" / "legacy-image.jpg"
+
+    from app.main import bootstrap_app
+
+    database_path, _, asset_service, _ = bootstrap_app(
+        app_data_dir=app_data_dir,
+        user_files_dir=user_files_dir,
+        legacy_data_dir=legacy_dir,
+    )
+
+    assert database_path == app_data_dir / "private_send.db"
+    assert database_path.read_bytes() != source_bytes
+    assert source_bytes == legacy_database.read_bytes()
+    assert source_asset.read_bytes() == b"legacy image bytes"
+    assert (user_files_dir / "assets" / "legacy-image.jpg").read_bytes() == source_asset.read_bytes()
+    assert asset_service.staging_dir == app_data_dir / "staging"
+    assert asset_service.assets_dir == user_files_dir / "assets"
+    with get_connection(database_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_bootstrap_preserves_conflicting_destination_files_and_copies_missing_legacy_files(
+    tmp_path: Path,
+) -> None:
+    legacy_dir = tmp_path / "legacy-project-data"
+    app_data_dir = tmp_path / "app-data"
+    user_files_dir = tmp_path / "user-files"
+    _create_v02_database(legacy_dir / "private_send.db", legacy_dir)
+    (legacy_dir / "settings.json").write_bytes(b"legacy settings")
+    (legacy_dir / "migration-note.txt").write_bytes(b"new project file")
+    (legacy_dir / "existing-directory.txt").write_bytes(b"legacy file")
+    (legacy_dir / "assets" / "nested").mkdir()
+    (legacy_dir / "assets" / "nested" / "missing.jpg").write_bytes(b"new asset")
+
+    app_data_dir.mkdir(parents=True)
+    (app_data_dir / "settings.json").write_bytes(b"existing settings")
+    destination_directory = app_data_dir / "existing-directory.txt"
+    destination_directory.mkdir()
+    (destination_directory / "keep.txt").write_bytes(b"keep directory")
+    existing_asset = user_files_dir / "assets" / "legacy-image.jpg"
+    existing_asset.parent.mkdir(parents=True)
+    existing_asset.write_bytes(b"existing asset")
+
+    from app.main import bootstrap_app
+
+    bootstrap_app(
+        app_data_dir=app_data_dir,
+        user_files_dir=user_files_dir,
+        legacy_data_dir=legacy_dir,
+    )
+
+    assert (app_data_dir / "settings.json").read_bytes() == b"existing settings"
+    assert (app_data_dir / "migration-note.txt").read_bytes() == b"new project file"
+    assert (destination_directory / "keep.txt").read_bytes() == b"keep directory"
+    assert existing_asset.read_bytes() == b"existing asset"
+    assert (
+        user_files_dir / "assets" / "nested" / "missing.jpg"
+    ).read_bytes() == b"new asset"
+
+
+def test_bootstrap_does_not_copy_assets_through_destination_symlink(
+    tmp_path: Path,
+) -> None:
+    legacy_dir = tmp_path / "legacy-project-data"
+    app_data_dir = tmp_path / "app-data"
+    user_files_dir = tmp_path / "user-files"
+    outside_dir = tmp_path / "outside"
+    _create_v02_database(legacy_dir / "private_send.db", legacy_dir)
+    outside_dir.mkdir()
+    user_files_dir.mkdir()
+    try:
+        (user_files_dir / "assets").symlink_to(
+            outside_dir, target_is_directory=True
+        )
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("creating directory symlinks requires Windows privileges")
+        raise
+
+    from app.main import bootstrap_app
+
+    bootstrap_app(
+        app_data_dir=app_data_dir,
+        user_files_dir=user_files_dir,
+        legacy_data_dir=legacy_dir,
+    )
+
+    assert list(outside_dir.iterdir()) == []
+
+
+def test_app_data_database_takes_priority_over_legacy_project_data(
+    tmp_path: Path,
+) -> None:
+    app_data_dir = tmp_path / "app-data"
+    legacy_dir = tmp_path / "legacy"
+    database_path = app_data_dir / "private_send.db"
+    legacy_database = legacy_dir / "private_send.db"
+    initialize_database(database_path)
+    with get_connection(database_path) as connection:
+        connection.execute(
+            "INSERT INTO messages (id, sender, type, text_content, created_at) "
+            "VALUES ('current', 'pc', 'text', 'current', '2026-01-01T00:00:00+00:00')"
+        )
+    _create_v02_database(legacy_database, legacy_dir)
+    legacy_bytes = legacy_database.read_bytes()
+
+    from app.main import bootstrap_app
+
+    bootstrap_app(
+        app_data_dir=app_data_dir,
+        user_files_dir=tmp_path / "files",
+        legacy_data_dir=legacy_dir,
+    )
+
+    with get_connection(database_path) as connection:
+        assert [row[0] for row in connection.execute("SELECT id FROM messages")] == ["current"]
+    assert legacy_database.read_bytes() == legacy_bytes
+
+
 def test_repository_construction_does_not_migrate_schema(tmp_path: Path) -> None:
     database_path = tmp_path / "rainier.db"
     _create_v02_database(database_path, tmp_path)
 
     AssetRepository(database_path)
     MessageRepository(database_path)
+    AssetService(database_path)
 
     with get_connection(database_path) as connection:
         schema = connection.execute(
@@ -199,7 +355,7 @@ def test_create_app_migrates_legacy_database_name_and_keeps_history(
     application = create_app(data_dir=tmp_path)
 
     assert private_database.is_file()
-    assert not legacy_database.exists()
+    assert legacy_database.exists()
     with TestClient(application) as client:
         response = client.get(
             "/api/messages",
@@ -262,40 +418,18 @@ def test_create_app_prefers_private_database_and_retains_legacy_file(
     )
 
 
-def test_database_path_race_uses_file_migrated_by_another_starter(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    legacy_database = tmp_path / "rainier.db"
-    private_database = tmp_path / "private_send.db"
-    legacy_database.write_bytes(b"legacy database")
-
-    def concurrent_replace(self: Path, target: Path) -> Path:
-        assert self == legacy_database
-        assert target == private_database
-        target.write_bytes(b"migrated by another starter")
-        self.unlink()
-        raise FileNotFoundError(self)
-
-    monkeypatch.setattr(Path, "replace", concurrent_replace)
-
-    assert resolve_database_path(tmp_path) == private_database
-    assert private_database.read_bytes() == b"migrated by another starter"
-    assert not legacy_database.exists()
-
-
-def test_database_path_migration_reraises_when_current_file_is_absent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_database_path_resolution_does_not_mutate_legacy_data(tmp_path: Path) -> None:
     legacy_database = tmp_path / "rainier.db"
     legacy_database.write_bytes(b"legacy database")
-
-    def failed_replace(self: Path, target: Path) -> Path:
-        raise FileNotFoundError(self)
-
-    monkeypatch.setattr(Path, "replace", failed_replace)
-
-    with pytest.raises(FileNotFoundError):
-        resolve_database_path(tmp_path)
-
+    assert resolve_database_path(tmp_path) == tmp_path / "private_send.db"
     assert legacy_database.exists()
     assert not (tmp_path / "private_send.db").exists()
+
+
+def test_windows_storage_roots_can_be_injected(tmp_path: Path) -> None:
+    assert resolve_app_data_dir(tmp_path / "LocalAppData") == (
+        tmp_path / "LocalAppData" / "private_send"
+    )
+    assert resolve_user_files_dir(tmp_path / "Profile") == (
+        tmp_path / "Profile" / "Downloads" / "file_private_send"
+    )

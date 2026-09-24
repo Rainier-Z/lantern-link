@@ -6,6 +6,7 @@ runtime/*
 
 # Runtime database, uploaded assets, staging files, and logs are local data.
 data/rainier.db
+data/private_send.db
 data/staging/*
 !data/staging/.gitkeep
 data/assets/*

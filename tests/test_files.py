@@ -12,15 +12,18 @@ from fastapi.testclient import TestClient
 from app.services.asset_service import FILE_POLICY, UploadError
 
 
-def client_for(tmp_path: Path) -> tuple[TestClient, dict[str, str]]:
+def client_for(tmp_path: Path) -> tuple[TestClient, dict[str, str], Path]:
     """Create an isolated app whose SQLite and asset files live under tmp_path."""
 
     from app.main import create_app
 
-    application = create_app(data_dir=tmp_path)
-    return TestClient(application), {
-        "Authorization": f"Bearer {application.state.token}"
-    }
+    user_files_dir = tmp_path / "Downloads" / "file_private_send"
+    application = create_app(data_dir=tmp_path, user_files_dir=user_files_dir)
+    return (
+        TestClient(application),
+        {"Authorization": f"Bearer {application.state.token}"},
+        user_files_dir,
+    )
 
 
 def upload_file(
@@ -58,7 +61,7 @@ def test_generic_file_formats_preserve_metadata_and_bytes(
     filename: str,
     content_type: str,
 ) -> None:
-    client, headers = client_for(tmp_path)
+    client, headers, user_files_dir = client_for(tmp_path)
     source = (f"original bytes for {filename}\x00\xff".encode("utf-8"))
 
     response = upload_file(
@@ -82,7 +85,7 @@ def test_generic_file_formats_preserve_metadata_and_bytes(
     assert asset["mime_type"] == content_type
     assert asset["size"] == len(source)
     assert asset["sha256"] == hashlib.sha256(source).hexdigest()
-    stored_path = tmp_path / Path(asset["relative_path"])
+    stored_path = user_files_dir / Path(asset["relative_path"])
     assert stored_path.is_file()
     assert stored_path.read_bytes() == source
 
@@ -94,10 +97,56 @@ def test_generic_file_formats_preserve_metadata_and_bytes(
     assert downloaded.content == source
 
 
+def test_uploads_use_original_names_collision_suffix_and_user_root_relative_paths(
+    tmp_path: Path,
+) -> None:
+    client, headers, user_files_dir = client_for(tmp_path)
+
+    first = upload_file(
+        client, headers, "report.txt", b"first bytes", content_type="text/plain"
+    ).json()["asset"]
+    second = upload_file(
+        client, headers, "report.txt", b"second bytes", content_type="text/plain"
+    ).json()["asset"]
+
+    first_date = first["created_at"][:10]
+    second_date = second["created_at"][:10]
+    first_path = Path(first["relative_path"])
+    second_path = Path(second["relative_path"])
+    assert first_path.as_posix() == f"{first_date}/report.txt"
+    assert second_path.as_posix() == f"{second_date}/report (1).txt"
+    assert first_path.is_relative_to(Path(first_date))
+    assert (user_files_dir / first_path).read_bytes() == b"first bytes"
+    assert (user_files_dir / second_path).read_bytes() == b"second bytes"
+    assert first["stored_filename"] == "report.txt"
+    assert second["stored_filename"] == "report (1).txt"
+
+
+def test_upload_filename_is_normalized_to_a_safe_archive_basename(
+    tmp_path: Path,
+) -> None:
+    client, headers, user_files_dir = client_for(tmp_path)
+
+    response = upload_file(
+        client,
+        headers,
+        r"..\..\report.txt",
+        b"safe bytes",
+        content_type="text/plain",
+    )
+
+    assert response.status_code == 200, response.text
+    asset = response.json()["asset"]
+    relative_path = Path(asset["relative_path"])
+    assert relative_path.parts[-1] == "report.txt"
+    assert len(relative_path.parts) == 2
+    assert (user_files_dir / relative_path).read_bytes() == b"safe bytes"
+
+
 def test_generic_file_history_survives_restart_and_reports_file_stats(
     tmp_path: Path,
 ) -> None:
-    client, headers = client_for(tmp_path)
+    client, headers, _ = client_for(tmp_path)
     source = b"persist me across process restart"
     created = upload_file(
         client,
@@ -110,7 +159,7 @@ def test_generic_file_history_survives_restart_and_reports_file_stats(
     asset_id = created["asset"]["id"]
     client.close()
 
-    restarted, restarted_headers = client_for(tmp_path)
+    restarted, restarted_headers, _ = client_for(tmp_path)
     history = restarted.get("/api/messages", headers=restarted_headers)
     assert history.status_code == 200, history.text
     persisted = next(item for item in history.json()["messages"] if item["id"] == message_id)
@@ -127,7 +176,7 @@ def test_generic_file_history_survives_restart_and_reports_file_stats(
 
 
 def test_generic_file_upload_requires_bearer_token(tmp_path: Path) -> None:
-    client, _ = client_for(tmp_path)
+    client, _, _ = client_for(tmp_path)
     response = upload_file(client, {}, "private.zip", b"zip bytes")
     assert response.status_code == 401
 
@@ -144,7 +193,7 @@ def test_generic_file_limit_is_512_mib_without_allocating_a_large_payload(
     """
 
     assert FILE_POLICY.max_bytes == 512 * 1024 * 1024
-    client, headers = client_for(tmp_path)
+    client, headers, _ = client_for(tmp_path)
     service: Any = client.app.state.asset_service
 
     async def reject_oversized_upload(file: Any, sender: str):
@@ -157,7 +206,7 @@ def test_generic_file_limit_is_512_mib_without_allocating_a_large_payload(
 
 
 def test_no_format_specific_file_endpoints_are_exposed(tmp_path: Path) -> None:
-    client, _ = client_for(tmp_path)
+    client, _, _ = client_for(tmp_path)
     paths = client.app.openapi()["paths"]
     assert "/api/assets/files" in paths
     assert "/api/assets/pdf" not in paths
@@ -166,7 +215,7 @@ def test_no_format_specific_file_endpoints_are_exposed(tmp_path: Path) -> None:
 
 
 def test_generic_file_upload_rejects_empty_payload(tmp_path: Path) -> None:
-    client, headers = client_for(tmp_path)
+    client, headers, _ = client_for(tmp_path)
     response = upload_file(client, headers, "empty.json", b"", content_type="application/json")
     assert response.status_code == 400
     assert response.json()["detail"] == "Upload cannot be empty"

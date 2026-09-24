@@ -8,14 +8,19 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.database import get_connection
-from app.main import create_app
+from app.core.database import initialize_database
+from app.main import bootstrap_app, create_app
 from app.repositories.asset_repository import AssetRepository
-from app.services.asset_service import AssetService
 
 
 def client_for(tmp_path: Path) -> tuple[TestClient, dict[str, str], Path]:
-    app = create_app(data_dir=tmp_path)
-    return TestClient(app), {"Authorization": f"Bearer {app.state.token}"}, tmp_path
+    user_files_dir = tmp_path / "Downloads" / "file_private_send"
+    app = create_app(data_dir=tmp_path, user_files_dir=user_files_dir)
+    return (
+        TestClient(app),
+        {"Authorization": f"Bearer {app.state.token}"},
+        user_files_dir,
+    )
 
 
 def upload(client: TestClient, headers: dict[str, str], name: str, content: bytes):
@@ -76,14 +81,21 @@ def test_image_round_trip_history_and_stats(tmp_path: Path) -> None:
 
 
 def test_missing_file_returns_gone_and_delete_removes_last_reference(tmp_path: Path) -> None:
-    client, headers, data_dir = client_for(tmp_path)
+    client, headers, user_files_dir = client_for(tmp_path)
     created = upload(client, headers, "camera.jpg", b"image-bytes").json()
     asset_id = created["asset"]["id"]
-    path = next((data_dir / "assets").rglob(f"{asset_id}.jpg"))
+    path = user_files_dir / created["asset"]["relative_path"]
     path.unlink()
 
     missing = client.get(f"/api/assets/{asset_id}", headers=headers)
     assert missing.status_code == 410
+    with get_connection(tmp_path / "private_send.db") as connection:
+        assert connection.execute(
+            "SELECT status FROM assets WHERE id = ?", (asset_id,)
+        ).fetchone()[0] == "MISSING"
+    history = client.get("/api/messages", headers=headers).json()["messages"]
+    assert any(item["asset"]["id"] == asset_id for item in history)
+
     deleted = client.delete(f"/api/messages/{created['message']['id']}", headers=headers)
     assert deleted.status_code == 200
     assert client.get(f"/api/assets/{asset_id}", headers=headers).status_code == 404
@@ -92,21 +104,21 @@ def test_missing_file_returns_gone_and_delete_removes_last_reference(tmp_path: P
 def test_delete_pending_asset_is_retried_on_service_startup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Keep metadata pending when unlink fails, then recover it on startup."""
+    """Retry failed metadata deletion without removing the archived file."""
 
-    client, headers, data_dir = client_for(tmp_path)
+    client, headers, user_files_dir = client_for(tmp_path)
     created = upload(client, headers, "retry-on-startup.jpg", b"image-bytes").json()
     asset_id = created["asset"]["id"]
     message_id = created["message"]["id"]
-    asset_path = next((data_dir / "assets").rglob(f"{asset_id}.jpg"))
-    original_unlink = Path.unlink
+    asset_path = user_files_dir / created["asset"]["relative_path"]
+    original_mark_deleted = AssetRepository.mark_deleted
 
-    def fail_only_for_target(path: Path, *, missing_ok: bool = False) -> None:
-        if path.resolve() == asset_path.resolve():
-            raise OSError("simulated physical delete failure")
-        original_unlink(path, missing_ok=missing_ok)
+    def fail_only_for_target(repository, target_id, deleted_at):
+        if target_id == asset_id:
+            return False
+        return original_mark_deleted(repository, target_id, deleted_at)
 
-    monkeypatch.setattr(Path, "unlink", fail_only_for_target)
+    monkeypatch.setattr(AssetRepository, "mark_deleted", fail_only_for_target)
     deleted = client.delete(f"/api/messages/{message_id}", headers=headers)
 
     assert deleted.status_code == 200, deleted.text
@@ -115,13 +127,72 @@ def test_delete_pending_asset_is_retried_on_service_startup(
     assert pending.status == "DELETE_PENDING"
     assert asset_path.is_file()
 
-    monkeypatch.setattr(Path, "unlink", original_unlink)
-    recovered = AssetService(tmp_path / "private_send.db")
+    monkeypatch.setattr(AssetRepository, "mark_deleted", original_mark_deleted)
+    _, _, recovered, _ = bootstrap_app(
+        app_data_dir=tmp_path,
+        user_files_dir=user_files_dir,
+    )
 
     completed = recovered.repository.get(asset_id)
     assert completed is not None
     assert completed.status == "DELETED"
-    assert not asset_path.exists()
+    assert asset_path.read_bytes() == b"image-bytes"
+
+
+def test_legacy_asset_import_copies_to_date_archive_and_updates_metadata(
+    tmp_path: Path,
+) -> None:
+    legacy_dir = tmp_path / "legacy"
+    app_data_dir = tmp_path / "app-data"
+    user_files_dir = tmp_path / "Downloads" / "file_private_send"
+    database_path = legacy_dir / "private_send.db"
+    asset_id = "legacy-asset"
+    source_relative_path = f"assets/2026/01/02/{asset_id}.jpg"
+    source_path = legacy_dir / source_relative_path
+    payload = b"old image bytes"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_bytes(payload)
+    initialize_database(database_path)
+    with get_connection(database_path) as connection:
+        connection.execute(
+            """INSERT INTO assets
+               (id, kind, original_filename, stored_filename, extension, mime_type,
+                size, sha256, relative_path, status, created_at)
+               VALUES (?, 'image', 'old trip.jpg', ?, '.jpg', 'image/jpeg', ?, ?, ?,
+                       'AVAILABLE', '2026-01-02T03:04:05+00:00')""",
+            (
+                asset_id,
+                f"{asset_id}.jpg",
+                len(payload),
+                "unused-test-digest",
+                source_relative_path,
+            ),
+        )
+        connection.execute(
+            """INSERT INTO messages
+               (id, sender, type, asset_id, status, created_at)
+               VALUES ('legacy-message', 'iphone', 'image', ?, 'SENT',
+                       '2026-01-02T03:04:05+00:00')""",
+            (asset_id,),
+        )
+
+    app = create_app(
+        data_dir=app_data_dir,
+        user_files_dir=user_files_dir,
+        legacy_data_dir=legacy_dir,
+    )
+    headers = {"Authorization": f"Bearer {app.state.token}"}
+    migrated_asset = AssetRepository(app_data_dir / "private_send.db").get(asset_id)
+
+    assert migrated_asset is not None
+    assert migrated_asset.relative_path == "2026-01-02/old trip.jpg"
+    assert (user_files_dir / migrated_asset.relative_path).read_bytes() == payload
+    assert source_path.read_bytes() == payload
+    assert (user_files_dir / source_relative_path).read_bytes() == payload
+    with TestClient(app) as client:
+        download = client.get(f"/api/assets/{asset_id}", headers=headers)
+        assert download.status_code == 200, download.text
+        assert download.content == payload
 
 
 def test_upload_requires_token_and_allowed_extension(tmp_path: Path) -> None:

@@ -9,7 +9,7 @@
     <link rel="stylesheet" href="/style.css?v=0.3.2">
   </head>
   <body>
-    <main class="app-shell">
+    <main class="app-shell" id="app-shell">
       <header class="topbar">
         <div class="brand-lockup">
           <span class="brand-mark" aria-hidden="true"></span>
@@ -19,9 +19,12 @@
           </div>
         </div>
 
-        <div class="connection-wrap" aria-live="polite">
-          <span class="status-dot is-connecting" id="status-dot" aria-hidden="true"></span>
-          <span id="connection-label">Connecting</span>
+        <div class="topbar-actions">
+          <button class="history-toggle" id="history-toggle" type="button" aria-controls="history-drawer" aria-expanded="false">History</button>
+          <div class="connection-wrap" aria-live="polite">
+            <span class="status-dot is-connecting" id="status-dot" aria-hidden="true"></span>
+            <span id="connection-label">Connecting</span>
+          </div>
         </div>
       </header>
 
@@ -64,11 +67,7 @@
         ></textarea>
         <div class="composer-batch" id="composer-batch" aria-live="polite" hidden></div>
         <div class="composer-footer">
-          <div class="file-pickers">
-            <button class="image-picker" id="image-pick-button" type="button">Image</button>
-            <button class="image-picker file-picker" id="file-pick-button" type="button">File</button>
-          </div>
-          <input class="sr-only" id="image-input" type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif" multiple>
+          <button class="file-picker" id="file-pick-button" type="button">File</button>
           <input class="sr-only" id="file-input" type="file" multiple>
           <span class="composer-hint">Enter to send · Shift + Enter for a new line</span>
           <button class="send-button" id="send-button" type="submit">Send <span class="send-arrow" aria-hidden="true">↗</span></button>
@@ -93,6 +92,35 @@
         <span id="app-version">private_send</span>
       </footer>
     </main>
+
+    <div class="history-overlay" id="history-overlay" hidden aria-hidden="true"></div>
+    <aside class="history-drawer" id="history-drawer" role="dialog" aria-modal="true" aria-labelledby="history-title" tabindex="-1" hidden>
+      <header class="history-header">
+        <div>
+          <p class="section-label">Your archive</p>
+          <h2 id="history-title">History</h2>
+        </div>
+        <button class="history-close" id="history-close" type="button" aria-label="Close history">×</button>
+      </header>
+      <div class="history-tabs" role="tablist" aria-label="History grouping">
+        <button class="history-tab is-active" id="history-tab-date" type="button" role="tab" aria-selected="true" aria-controls="history-list" data-history-mode="date">By Date</button>
+        <button class="history-tab" id="history-tab-file" type="button" role="tab" aria-selected="false" aria-controls="history-list" data-history-mode="file">By File</button>
+      </div>
+      <div class="history-filters">
+        <label class="sr-only" for="history-type">Filter by type</label>
+        <select id="history-type">
+          <option value="all">All types</option>
+          <option value="image">Images</option>
+          <option value="file">Files</option>
+        </select>
+        <label class="sr-only" for="history-search">Search filenames</label>
+        <input id="history-search" type="search" maxlength="200" placeholder="Search files">
+      </div>
+      <p class="history-status" id="history-status" role="status" aria-live="polite"></p>
+      <div class="history-list" id="history-list" role="tabpanel" aria-labelledby="history-tab-date" tabindex="0"></div>
+    </aside>
+
+    <div class="batch-toast" id="batch-toast" role="status" aria-live="polite" hidden></div>
 
     <dialog class="image-modal" id="image-modal">
       <button class="modal-close" id="modal-close" type="button" aria-label="Close preview">×</button>

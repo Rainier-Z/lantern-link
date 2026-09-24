@@ -6,10 +6,15 @@ import sqlite3
 from pathlib import Path
 from typing import Iterator
 
-from app.core.config import PROJECT_ROOT, resolve_database_path
+from app.core.config import resolve_database_path
 
 
-DATABASE_PATH = resolve_database_path(PROJECT_ROOT / "data")
+DATABASE_PATH = resolve_database_path()
+CURRENT_DATABASE_VERSION = 3
+
+
+class DatabaseVersionError(RuntimeError):
+    """Raised when a database was written by a newer application version."""
 
 
 def get_connection(path: Path | str | None = None) -> sqlite3.Connection:
@@ -66,6 +71,13 @@ def migrate_database(path: Path | str | None = None) -> None:
 
     connection = get_connection(path)
     try:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if version > CURRENT_DATABASE_VERSION:
+            raise DatabaseVersionError(
+                f"Database version {version} is newer than supported version "
+                f"{CURRENT_DATABASE_VERSION}"
+            )
+
         schema = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
         ).fetchone()

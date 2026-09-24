@@ -1,6 +1,7 @@
 """Runtime configuration for private_send."""
 
 import logging
+import os
 from pathlib import Path
 
 
@@ -12,32 +13,33 @@ PORT = 9527
 MESSAGE_MAX_BYTES = 64 * 1024
 
 DATABASE_NAME = "private_send.db"
-# Legacy v0.3.1 database filename; migration only.
+# Older database filename retained for migration only.
 LEGACY_DATABASE_NAME = "rainier.db"
 _LOGGER = logging.getLogger(__name__)
 
 
 def resolve_database_path(data_dir: Path | str | None = None) -> Path:
-    """Return the current database path, migrating the legacy filename once."""
+    """Return the selected database path without mutating stored data."""
 
-    directory = Path(data_dir) if data_dir is not None else PROJECT_ROOT / "data"
-    current_path = directory / DATABASE_NAME
-    legacy_path = directory / LEGACY_DATABASE_NAME
+    directory = Path(data_dir) if data_dir is not None else resolve_app_data_dir()
+    return directory / DATABASE_NAME
 
-    if current_path.exists():
-        if legacy_path.exists():
-            _LOGGER.warning(
-                "Both private_send.db and legacy rainier.db exist; "
-                "using private_send.db and retaining rainier.db"
-            )
-        return current_path
 
-    if legacy_path.exists():
-        try:
-            legacy_path.replace(current_path)
-        except FileNotFoundError:
-            if current_path.exists():
-                return current_path
-            raise
+def resolve_app_data_dir(local_app_data: Path | str | None = None) -> Path:
+    """Return the private_send app-data directory, with an injectable base."""
 
-    return current_path
+    base = local_app_data or os.environ.get("LOCALAPPDATA")
+    if base is None:
+        base = Path.home() / "AppData" / "Local"
+    return Path(base) / "private_send"
+
+
+def resolve_user_files_dir(
+    user_profile: Path | str | None = None,
+) -> Path:
+    """Return the user-visible file root, with an injectable profile path."""
+
+    base = user_profile or os.environ.get("USERPROFILE")
+    if base is None:
+        base = Path.home()
+    return Path(base) / "Downloads" / "file_private_send"

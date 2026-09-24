@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.core.database import DATABASE_PATH, get_connection
-from app.models.asset import Asset
+from app.models.asset import Asset, HistoryItem
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -50,8 +50,109 @@ class AssetRepository:
             ).fetchone()
         return asset_from_row(row) if row else None
 
+    def list_available(self) -> list[Asset]:
+        with get_connection(self.database_path) as connection:
+            rows = connection.execute(
+                "SELECT * FROM assets WHERE status = 'AVAILABLE' "
+                "ORDER BY created_at, id"
+            ).fetchall()
+        return [asset_from_row(row) for row in rows]
+
+    def list_history(
+        self, *, kind: str = "all", keyword: str | None = None
+    ) -> list[HistoryItem]:
+        """Return active attachment messages newest first, without disk paths."""
+
+        clauses = [
+            "m.deleted_at IS NULL",
+            "m.asset_id IS NOT NULL",
+            "a.status NOT IN ('DELETED', 'DELETE_PENDING')",
+        ]
+        parameters: list[object] = []
+        if kind != "all":
+            clauses.append("a.kind = ?")
+            parameters.append(kind)
+        with get_connection(self.database_path) as connection:
+            rows = connection.execute(
+                """SELECT m.id AS message_id, a.id AS asset_id, a.kind,
+                          a.original_filename AS filename, a.size,
+                          COALESCE(m.created_at, a.created_at) AS created_at,
+                          a.status
+                     FROM messages AS m
+                     JOIN assets AS a ON a.id = m.asset_id
+                    WHERE """ + " AND ".join(clauses) +
+                " ORDER BY COALESCE(m.created_at, a.created_at) DESC, m.id DESC",
+                parameters,
+            ).fetchall()
+        if keyword:
+            folded_keyword = keyword.casefold()
+            rows = [
+                row for row in rows
+                if folded_keyword in row["filename"].casefold()
+            ]
+        items = []
+        for row in rows:
+            availability = (
+                "AVAILABLE" if row["status"] == "AVAILABLE"
+                else "MISSING" if row["status"] == "MISSING"
+                else "PENDING"
+            )
+            asset_id = row["asset_id"]
+            is_available = availability == "AVAILABLE"
+            items.append(
+                HistoryItem(
+                    message_id=row["message_id"],
+                    asset_id=asset_id,
+                    kind=row["kind"],
+                    filename=row["filename"],
+                    display_name=row["filename"],
+                    size=row["size"],
+                    created_at=_parse_datetime(row["created_at"]),
+                    asset_url=f"/api/assets/{asset_id}" if is_available else None,
+                    download_url=(
+                        f"/api/assets/{asset_id}?download=1" if is_available else None
+                    ),
+                    availability=availability,
+                )
+            )
+        return items
+
+    def update_storage_location(
+        self,
+        asset_id: str,
+        expected_relative_path: str,
+        stored_filename: str,
+        relative_path: str,
+    ) -> bool:
+        with get_connection(self.database_path) as connection:
+            cursor = connection.execute(
+                """UPDATE assets
+                      SET stored_filename = ?, relative_path = ?,
+                          status = CASE
+                            WHEN EXISTS (
+                                SELECT 1 FROM messages
+                                WHERE asset_id = assets.id AND deleted_at IS NOT NULL
+                            ) AND NOT EXISTS (
+                                SELECT 1 FROM messages
+                                WHERE asset_id = assets.id AND deleted_at IS NULL
+                            ) THEN 'DELETE_PENDING'
+                            ELSE 'AVAILABLE'
+                          END
+                    WHERE id = ? AND status = 'ARCHIVE_PENDING' AND relative_path = ?""",
+                (stored_filename, relative_path, asset_id, expected_relative_path),
+            )
+        return cursor.rowcount == 1
+
+    def list_archive_pending(self) -> list[Asset]:
+        with get_connection(self.database_path) as connection:
+            rows = connection.execute(
+                "SELECT * FROM assets WHERE status = 'ARCHIVE_PENDING' "
+                "ORDER BY created_at, id"
+            ).fetchall()
+        return [asset_from_row(row) for row in rows]
+
     def list_delete_pending(self) -> list[Asset]:
-        """Return assets whose physical deletion still needs to be completed.
+        """Return assets whose managed-file or metadata deletion is pending.
 
         Recovery is deliberately scoped to ``DELETE_PENDING`` rows.  In
         particular, startup must never reinterpret an ``AVAILABLE`` or

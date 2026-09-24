@@ -9,11 +9,20 @@ from uuid import uuid4
 
 import pytest
 
+from app.main import bootstrap_app
 from app.services.asset_service import AssetService
 
 
 def _partial_path(staging_dir: Path) -> Path:
     return staging_dir / f"{uuid4()}.partial"
+
+
+def _bootstrap_service(database_path: Path) -> AssetService:
+    _, _, service, _ = bootstrap_app(
+        app_data_dir=database_path.parent,
+        user_files_dir=database_path.parent / "user-files",
+    )
+    return service
 
 
 def test_startup_gc_removes_only_partials_older_than_24_hours(
@@ -22,7 +31,7 @@ def test_startup_gc_removes_only_partials_older_than_24_hours(
     """Old abandoned uploads are removed without touching unrelated files."""
 
     database_path = tmp_path / "rainier.db"
-    service = AssetService(database_path)
+    service = _bootstrap_service(database_path)
     old_partial = _partial_path(service.staging_dir)
     new_partial = _partial_path(service.staging_dir)
     staging_note = service.staging_dir / "keep.txt"
@@ -36,8 +45,9 @@ def test_startup_gc_removes_only_partials_older_than_24_hours(
     old_time = time.time() - (24 * 60 * 60 + 60)
     os.utime(old_partial, (old_time, old_time))
 
-    AssetService(database_path)
+    started = _bootstrap_service(database_path)
 
+    assert started.staging_dir == service.staging_dir
     assert not old_partial.exists()
     assert new_partial.read_bytes() == b"still uploading"
     assert staging_note.read_text(encoding="utf-8") == "not a partial upload"
@@ -48,11 +58,11 @@ def test_startup_gc_ignores_recent_partial_uploads(tmp_path: Path) -> None:
     """A partial younger than 24 hours remains available for the active run."""
 
     database_path = tmp_path / "rainier.db"
-    service = AssetService(database_path)
+    service = _bootstrap_service(database_path)
     recent_partial = _partial_path(service.staging_dir)
     recent_partial.write_bytes(b"recent")
 
-    AssetService(database_path)
+    _bootstrap_service(database_path)
 
     assert recent_partial.read_bytes() == b"recent"
 
@@ -63,7 +73,7 @@ def test_startup_gc_survives_physical_delete_failure(
     """A failed cleanup is logged/ignored and must not prevent startup."""
 
     database_path = tmp_path / "rainier.db"
-    service = AssetService(database_path)
+    service = _bootstrap_service(database_path)
     old_partial = _partial_path(service.staging_dir)
     old_partial.write_bytes(b"abandoned")
     old_time = time.time() - (24 * 60 * 60 + 60)
@@ -80,7 +90,10 @@ def test_startup_gc_survives_physical_delete_failure(
 
     monkeypatch.setattr(Path, "unlink", fail_for_old_partial)
 
-    started = AssetService(database_path)
+    _, _, started, _ = bootstrap_app(
+        app_data_dir=database_path.parent,
+        user_files_dir=database_path.parent / "user-files",
+    )
 
     assert started.staging_dir == service.staging_dir
     assert attempted

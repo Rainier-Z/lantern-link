@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 
-APP_VERSION = "0.3.2"
+APP_VERSION = "1.0"
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _GIT_SHA_PATTERN = re.compile(r"[0-9a-fA-F]{4,40}")
 

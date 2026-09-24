@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+import os
+import tempfile
 import webbrowser
+import shutil
 from contextlib import suppress
 from io import BytesIO
 from pathlib import Path
@@ -13,7 +17,16 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.messages import router as messages_router
 from app.api.assets import router as assets_router
-from app.core.config import HOST, PORT, WEB_DIR, resolve_database_path
+from app.core.config import (
+    HOST,
+    LEGACY_DATABASE_NAME,
+    PROJECT_ROOT,
+    PORT,
+    WEB_DIR,
+    resolve_app_data_dir,
+    resolve_database_path,
+    resolve_user_files_dir,
+)
 from app.core.database import initialize_database
 from app.core.network import build_service_url, get_lan_ip
 from app.core.security import (
@@ -24,20 +37,13 @@ from app.core.security import (
 )
 from app.core.version import APP_BUILD, APP_VERSION
 from app.repositories.message_repository import MessageRepository
-from app.services.message_service import MessageService, message_service
-from app.services.asset_service import AssetService, asset_service
+from app.services.message_service import MessageService
+from app.services.asset_service import AssetService
 
 
-initialize_database()
+LOGGER = logging.getLogger(__name__)
 
 STATIC_NO_CACHE_PATHS = {"/", "/app.js", "/style.css"}
-
-app = FastAPI(title="private_send", version=APP_VERSION)
-app.state.token = get_access_token()
-app.state.message_service = message_service
-app.state.asset_service = asset_service
-app.include_router(messages_router)
-app.include_router(assets_router)
 
 
 def configure_cache_policy(application: FastAPI) -> None:
@@ -55,24 +61,18 @@ def configure_cache_policy(application: FastAPI) -> None:
         return response
 
 
-configure_cache_policy(app)
-
-
-@app.get("/api/health")
 def health() -> dict[str, str]:
     """Return a lightweight service liveness response."""
 
     return {"status": "ok", "service": "private_send"}
 
 
-@app.get("/api/version")
 def version() -> dict[str, str]:
     """Return public runtime version metadata without exposing private state."""
 
     return {"version": APP_VERSION, "build": APP_BUILD}
 
 
-@app.get("/api/pairing")
 def pairing(_: str = Depends(require_bearer_token)) -> dict[str, str]:
     """Return the authenticated pairing URL and QR image endpoint."""
 
@@ -82,14 +82,12 @@ def pairing(_: str = Depends(require_bearer_token)) -> dict[str, str]:
     }
 
 
-@app.get("/api/pairing/qr", include_in_schema=False)
 def pairing_qr(_: str = Depends(require_bearer_token)) -> Response:
     """Return the authenticated pairing QR image."""
 
     return Response(content=generate_pairing_qr(), media_type="image/png")
 
 
-@app.get("/", include_in_schema=False)
 def root(request: Request, token: str | None = None):
     """Establish a browser session, then serve the paired web client."""
 
@@ -125,27 +123,145 @@ def root(request: Request, token: str | None = None):
     return {"service": "private_send", "status": "online"}
 
 
-if WEB_DIR.is_dir():
-    # Keep this conditional so the backend remains importable before the UI exists.
-    app.mount("/", StaticFiles(directory=WEB_DIR), name="web")
+def bootstrap_app(
+    app_data_dir: str | Path | None = None,
+    user_files_dir: str | Path | None = None,
+    legacy_data_dir: str | Path | None = None,
+) -> tuple[Path, Path, AssetService, MessageService]:
+    """Select paths, safely copy legacy data, initialize storage, and recover."""
+
+    app_data_path = (
+        Path(app_data_dir) if app_data_dir is not None else resolve_app_data_dir()
+    )
+    files_path = (
+        Path(user_files_dir)
+        if user_files_dir is not None
+        else resolve_user_files_dir() if app_data_dir is None else app_data_path
+    )
+    source_path = (
+        Path(legacy_data_dir)
+        if legacy_data_dir is not None
+        else PROJECT_ROOT / "data" if app_data_dir is None else app_data_path
+    )
+    database_path = resolve_database_path(app_data_path)
+
+    legacy_database = source_path / LEGACY_DATABASE_NAME
+    if database_path.exists():
+        if legacy_database.is_file():
+            LOGGER.warning(
+                "Both private_send.db and legacy rainier.db exist; "
+                "using private_send.db and retaining rainier.db"
+            )
+    elif source_path.exists():
+        app_data_path.mkdir(parents=True, exist_ok=True)
+        if source_path.resolve() != app_data_path.resolve():
+            _copy_missing_tree(
+                source_path,
+                app_data_path,
+                ignored_names={"private_send.db", LEGACY_DATABASE_NAME, "assets"},
+            )
+        source_database = source_path / "private_send.db"
+        if not source_database.is_file():
+            source_database = legacy_database
+        if source_database.is_file() and not database_path.exists():
+            _copy_database_if_absent(source_database, database_path)
+        legacy_assets = source_path / "assets"
+        target_assets = files_path / "assets"
+        if (
+            legacy_assets.is_dir()
+            and legacy_assets.resolve() != target_assets.resolve()
+        ):
+            _copy_missing_tree(legacy_assets, target_assets)
+
+    app_data_path.mkdir(parents=True, exist_ok=True)
+    files_path.mkdir(parents=True, exist_ok=True)
+    initialize_database(database_path)
+    service = AssetService(
+        database_path,
+        staging_dir=app_data_path / "staging",
+        user_files_dir=files_path,
+    )
+    service.recover_delete_pending()
+    service.scan_staging()
+    message_service = MessageService(MessageRepository(database_path))
+    return database_path, files_path, service, message_service
 
 
-def create_app(data_dir: str | Path | None = None) -> FastAPI:
-    """Build an application bound to a selected data directory.
+def _copy_missing_tree(
+    source: Path,
+    destination: Path,
+    *,
+    ignored_names: set[str] | None = None,
+) -> None:
+    """Copy missing files from a tree without replacing destination paths."""
+
+    ignored = ignored_names or set()
+    for current, directory_names, file_names in os.walk(source):
+        current_path = Path(current)
+        relative_path = current_path.relative_to(source)
+        if relative_path == Path("."):
+            directory_names[:] = [name for name in directory_names if name not in ignored]
+        target_directory = destination / relative_path
+        if target_directory.is_symlink() or (
+            target_directory.exists() and not target_directory.is_dir()
+        ):
+            directory_names.clear()
+            continue
+        target_directory.mkdir(parents=True, exist_ok=True)
+
+        for file_name in file_names:
+            if relative_path == Path(".") and file_name in ignored:
+                continue
+            source_file = current_path / file_name
+            target_file = target_directory / file_name
+            if target_file.exists() or target_file.is_symlink():
+                continue
+            try:
+                with source_file.open("rb") as source_stream:
+                    with target_file.open("xb") as target_stream:
+                        shutil.copyfileobj(source_stream, target_stream)
+            except FileExistsError:
+                continue
+
+
+def _copy_database_if_absent(source: Path, destination: Path) -> bool:
+    """Copy a legacy database without replacing a database created meanwhile."""
+
+    if destination.exists():
+        return False
+    with tempfile.NamedTemporaryFile(
+        prefix="private_send_migration_", suffix=".tmp", dir=destination.parent,
+        delete=False,
+    ) as temporary:
+        temporary_path = Path(temporary.name)
+    try:
+        shutil.copy2(source, temporary_path)
+        try:
+            os.link(temporary_path, destination)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def create_app(
+    data_dir: str | Path | None = None,
+    *,
+    user_files_dir: str | Path | None = None,
+    legacy_data_dir: str | Path | None = None,
+) -> FastAPI:
+    """Build and bootstrap an application bound to selected data directories.
 
     The factory is used by tests and future embedded instances so each app can
     use an isolated SQLite file without changing the module-level server app.
     """
 
-    if data_dir is None:
-        database_path = resolve_database_path()
-        initialize_database(database_path)
-        service = message_service
-    else:
-        database_path = resolve_database_path(data_dir)
-        initialize_database(database_path)
-        service = MessageService(MessageRepository(database_path))
-    asset_bound_service = asset_service if data_dir is None else AssetService(database_path)
+    database_path, _, asset_bound_service, service = bootstrap_app(
+        app_data_dir=data_dir,
+        user_files_dir=user_files_dir,
+        legacy_data_dir=legacy_data_dir,
+    )
 
     application = FastAPI(title="private_send", version=APP_VERSION)
     application.state.token = get_access_token()
@@ -171,6 +287,9 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
     if WEB_DIR.is_dir():
         application.mount("/", StaticFiles(directory=WEB_DIR), name="web")
     return application
+
+
+app = create_app()
 
 
 def generate_pairing_qr() -> bytes:

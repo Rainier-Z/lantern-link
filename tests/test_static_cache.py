@@ -1,4 +1,4 @@
-"""Regression tests for the v0.3.2 static-resource and composer contract."""
+"""Regression tests for the 1.0 static-resource and composer contract."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ def _assert_no_store(response) -> None:
 def test_root_and_versioned_static_resources_disable_cache(tmp_path: Path) -> None:
     with TestClient(create_app(data_dir=tmp_path)) as client:
         root = client.get("/", params={"token": get_access_token()})
-        app_js = client.get("/app.js?v=0.3.2")
-        style_css = client.get("/style.css?v=0.3.2")
+        app_js = client.get("/app.js")
+        style_css = client.get("/style.css")
 
         for response in (root, app_js, style_css):
             _assert_no_store(response)
@@ -31,8 +31,8 @@ def test_root_and_versioned_static_resources_disable_cache(tmp_path: Path) -> No
         # The HTML shell must reference the same cache-busting version as the
         # browser requests above; otherwise a stale shell can load stale code.
         html = root.text
-        assert '/app.js?v=0.3.2' in html
-        assert '/style.css?v=0.3.2' in html
+        assert '/app.js' in html and '?v=' not in html
+        assert '/style.css' in html and '?v=' not in html
 
 
 def test_version_endpoint_is_public_and_reports_v1(tmp_path: Path) -> None:
@@ -92,8 +92,8 @@ def test_static_shell_uses_composer_batch_contract_without_storage_ui() -> None:
     assert "storage" not in css.lower()
     assert "requestAnimationFrame" in script
     assert 'scrollIntoView({ block: "end", behavior: "auto" })' in script
-    assert '"/api/assets/images"' in script
-    assert '"/api/assets/files"' in script
+    assert '"/api/assets/images"' not in script
+    assert '"/api/assets/files"' not in script
     assert 'request.setRequestHeader("Authorization"' in script
 
     # One unrestricted picker keeps image formats and generic files selectable.
@@ -103,20 +103,11 @@ def test_static_shell_uses_composer_batch_contract_without_storage_ui() -> None:
     assert 'id="image-pick-button"' not in html
     assert 'id="file-pick-button"' in html
     assert 'accept="' not in html
-    assert all(
-        mime in script
-        for mime in (
-            "image/jpeg",
-            "image/png",
-            "image/gif",
-            "image/webp",
-            "image/heic",
-            "image/heif",
-        )
-    )
+    assert "isImageFile" not in script
     assert "Number.isNaN(date.getTime())" in script
 
     assert 'id="history-toggle"' in html
+    assert 'aria-label="Open history"' in html
     assert '<main class="app-shell" id="app-shell">' in html
     assert '"app-shell"' in script
     assert 'role="dialog" aria-modal="true"' in html
@@ -126,8 +117,13 @@ def test_static_shell_uses_composer_batch_contract_without_storage_ui() -> None:
     assert 'id="history-tab-file"' in html and ">By File<" in html
     assert all(f'value="{kind}"' in html for kind in ("all", "image", "file"))
     assert 'id="history-search" type="search"' in html
+    assert 'id="history-format"' in html
+    assert 'id="history-more"' in html
     assert 'id="batch-toast" role="status" aria-live="polite"' in html
-    assert 'api(`/api/history?type=${encodeURIComponent(type)}${search}`)' in script
+    assert 'historyHasMore' in script
+    assert '"/api/assets"' in script
+    assert 'IMAGE_MIME_TYPES' not in script
+    assert 'event.isComposing' in script
     assert 'function openHistory()' in script
     assert 'function closeHistory()' in script
     assert 'function trapHistoryFocus(event)' in script
@@ -140,13 +136,14 @@ def test_static_shell_uses_composer_batch_contract_without_storage_ui() -> None:
     assert 'PENDING: "Pending"' in script
     assert 'item.availability === "AVAILABLE" && safeHistoryUrl(item.asset_url)' in script
     assert 'if (actions.childElementCount) row.append(actions)' in script
-    assert 'One item couldn\'t be saved. Retry it in the composer.' in script
-    assert '8000); else showBatchToast' in script and 'false, 4000)' in script
+    assert 'Retry the failed item below.' in script
+    assert 'failedCount ? 8000 : 4000' in script
     assert 'History couldn\'t be loaded. Try again.' in script
     assert "response.json()).detail" not in script
     assert 'min-width: 360px' in css
     assert 'min(88vw, 420px)' in css
     assert 'bottom: calc(118px + env(safe-area-inset-bottom))' in css
+    assert 'white-space: pre-line' in css
 
 
 def test_asset_endpoint_keeps_bearer_authentication(tmp_path: Path) -> None:

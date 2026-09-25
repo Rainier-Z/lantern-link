@@ -234,10 +234,13 @@ def test_fresh_environment_import_and_bootstrap_initialize_before_recovery(tmp_p
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     result = subprocess.run(
         [sys.executable, "-B", "-c",
-         "from app.services.asset_service import AssetService; "
-         "from app.main import create_app; "
-         "app = create_app(); "
-         "assert app.state.asset_service.repository.list_archive_pending() == []"],
+             "from app.main import create_app; "
+             "from fastapi.testclient import TestClient; "
+             "app = create_app(); "
+             "client = TestClient(app); "
+             "client.__enter__(); "
+             "assert app.state.asset_service.repository.list_archive_pending() == []; "
+             "client.__exit__(None, None, None)"],
         env=environment, capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stderr

@@ -107,6 +107,18 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _host_local_timezone():
+    """Resolve the host-local timezone at use time for archive folders."""
+
+    return datetime.now().astimezone().tzinfo
+
+
+def archive_date_for(created_at: datetime) -> str:
+    """Return the stable host-local archive date for a UTC metadata timestamp."""
+
+    return created_at.astimezone(_host_local_timezone()).date().isoformat()
+
+
 def _serialize_datetime(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
@@ -142,6 +154,7 @@ class AssetService:
         *,
         staging_dir: Path | str | None = None,
         user_files_dir: Path | str | None = None,
+        cleanup_legacy_assets: bool = False,
     ) -> None:
         self.database_path = Path(database_path) if database_path else DATABASE_PATH
         self.data_dir = self.database_path.parent
@@ -152,15 +165,15 @@ class AssetService:
             else resolve_user_files_dir() if database_path is None else self.data_dir
         )
         self.assets_dir = self.user_files_dir / "assets"
+        self.cleanup_legacy_assets = cleanup_legacy_assets
         self.staging_dir.mkdir(parents=True, exist_ok=True)
-        self.assets_dir.mkdir(parents=True, exist_ok=True)
         self.repository = AssetRepository(self.database_path)
         if database_path is not None:
             self.recover_archive_pending()
             self.import_legacy_assets()
 
     def _archive_directory(self, created_at: datetime) -> Path:
-        date_directory = self.user_files_dir / created_at.strftime("%Y-%m-%d")
+        date_directory = self.user_files_dir / archive_date_for(created_at)
         date_directory.mkdir(parents=True, exist_ok=True)
         user_files_root = self.user_files_dir.resolve()
         if (
@@ -207,13 +220,9 @@ class AssetService:
         """Reserve a destination while the caller holds BEGIN IMMEDIATE."""
 
         directory = self._archive_directory(created_at)
-        reservations = {
-            (datetime.fromisoformat(row["created_at"]).strftime("%Y-%m-%d"),
-             row["stored_filename"])
-            for row in connection.execute(
-                "SELECT created_at, stored_filename FROM assets "
-                "WHERE status = 'ARCHIVE_PENDING'"
-            )
+        reserved_paths = {
+            row["relative_path"]
+            for row in connection.execute("SELECT relative_path FROM assets")
         }
         filename_path = Path(filename)
         collision_number = 0
@@ -222,9 +231,10 @@ class AssetService:
                 f"{filename_path.stem} ({collision_number}){filename_path.suffix}"
             )
             destination = directory / candidate
+            relative_path = (Path(directory.name) / candidate).as_posix()
             if not (
                 destination.exists() or destination.is_symlink()
-                or (directory.name, candidate) in reservations
+                or relative_path in reserved_paths
             ):
                 return candidate
             collision_number += 1
@@ -336,6 +346,27 @@ class AssetService:
                 )
         return imported
 
+    def _remove_owned_legacy_source(self, source_path: Path) -> None:
+        """Remove one migrated compatibility copy, never the project source."""
+
+        if not self.cleanup_legacy_assets:
+            return
+        managed_root = self.assets_dir.resolve()
+        if (
+            self.assets_dir.is_symlink()
+            or managed_root != self.user_files_dir.resolve() / "assets"
+            or managed_root not in source_path.resolve().parents
+        ):
+            raise RuntimeError("Legacy compatibility path escapes its storage root")
+        source_path.unlink(missing_ok=True)
+        directory = source_path.parent
+        while directory != managed_root:
+            try:
+                directory.rmdir()
+            except OSError:
+                break
+            directory = directory.parent
+
     def _complete_archive(self, asset: Asset) -> bool:
         if _normalize_archive_filename(asset.stored_filename) != asset.stored_filename:
             raise RuntimeError("Invalid archive filename")
@@ -370,8 +401,11 @@ class AssetService:
             asset.id, asset.relative_path, destination.name,
             destination.relative_to(self.user_files_dir).as_posix(),
         )
-        if completed and not legacy:
-            source_path.unlink(missing_ok=True)
+        if completed:
+            if legacy:
+                self._remove_owned_legacy_source(source_path)
+            else:
+                source_path.unlink(missing_ok=True)
         if completed:
             archived = self.repository.get(asset.id)
             if archived is not None and archived.status == "DELETE_PENDING":
@@ -547,7 +581,7 @@ class AssetService:
                     connection, created_at, filename
                 )
                 relative_path = (
-                    Path(created_at.strftime("%Y-%m-%d")) / stored_filename
+                    Path(archive_date_for(created_at)) / stored_filename
                 ).as_posix()
                 connection.execute(
                     """
@@ -617,6 +651,14 @@ class AssetService:
         """Persist a streamed generic file using the 512 MiB file policy."""
 
         return await self.persist_upload(file, sender, FILE_POLICY)
+
+    async def upload(self, file: UploadFile, sender: str) -> tuple[Message, Asset]:
+        """Persist an upload using the server-owned canonical classification."""
+
+        filename = _normalize_archive_filename((file.filename or "").strip())
+        extension = Path(filename).suffix.lower()
+        policy = IMAGE_POLICY if extension in ALLOWED_EXTENSIONS else FILE_POLICY
+        return await self.persist_upload(file, sender, policy)
 
     def resolve_asset_path(self, asset: Asset) -> Path:
         """Resolve an internally stored relative path below the user-files root."""
@@ -716,6 +758,3 @@ class AssetService:
             asset_count=asset_count,
             message_count=message_count,
         )
-
-
-asset_service = AssetService()

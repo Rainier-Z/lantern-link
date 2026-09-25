@@ -22,7 +22,7 @@
 
 ### （一）运行与启动
 
-- `app/main.py`：应用创建、启动引导、临时配对、健康和版本端点及 Uvicorn 入口。
+- `app/main.py`：无副作用的应用工厂、生命周期启动引导、临时配对、健康和版本端点及 Uvicorn 入口。
 - `app/core/config.py`：默认数据目录解析、数据库名称、Web 资源目录及监听参数。
 - `app/core/version.py`：产品版本和运行时 Git 构建标识。
 - `app/core/database.py`：SQLite 连接、schema 初始化和数据库版本迁移。
@@ -43,16 +43,16 @@
 - 私有应用数据根目录：`%LOCALAPPDATA%/private_send/`；若环境变量缺失，回退到当前 Windows 用户配置目录下的 `AppData/Local/private_send/`。
 - SQLite 数据库：私有应用数据根目录中的 `private_send.db`。
 - 上传暂存：私有应用数据根目录中的 `staging/`。
-- 用户可见归档：`%USERPROFILE%/Downloads/file_private_send/YYYY-MM-DD/`。
+- 用户可见归档：Windows 已知 Downloads 文件夹下的 `file_private_send/YYYY-MM-DD/`；无法解析时依次回退到 `%USERPROFILE%/Downloads/` 与当前用户目录。
 - 日志：日志输出由 Python 进程日志配置管理；应用默认不创建日志文件或日志目录。若部署环境启用文件日志，应将其放在私有应用数据根目录下的 `logs/`。
 
 程序内部使用绝对路径，但数据库仅记录相对于用户文件归档根目录的附件路径。公开文档使用环境变量形式，不记录任何本机账户名或其他个人绝对路径。
 
 ### （二）旧项目数据复制
 
-首次启动时，若新位置尚无数据库而项目目录 `data/` 存在，启动引导会复制目标位置缺少的普通文件，并从 `private_send.db` 或旧名 `rainier.db` 复制数据库。旧附件树会先复制到用户归档根目录下的兼容位置，再由资产服务按记录中的创建日期导入日期目录。数据库迁移成功后才更新对应资产元数据。
+首次启动时，若新位置尚无数据库而项目目录 `data/` 存在，启动引导会复制目标位置缺少的普通文件，并从 `private_send.db` 或旧名 `rainier.db` 复制数据库。旧附件树会先复制到用户归档根目录下的兼容位置，再由资产服务按记录中的创建日期导入日期目录。数据库迁移成功后才更新对应资产元数据。只有本次启动创建的兼容副本会在正式归档成功后删除；项目目录 `data/` 从不被自动删除或改写。
 
-复制操作不会删除或改写旧项目 `data/` 源文件；目标端已经存在的文件也不会被覆盖。若目标数据库已存在，程序优先使用目标数据库，不合并两个库。旧附件源文件保留，供用户自行确认和清理。
+复制操作不会删除或改写旧项目 `data/` 源文件；目标端已经存在的文件也不会被覆盖。若目标数据库已存在，程序优先使用目标数据库，不合并两个库。新安装不会创建旧兼容 `assets/` 目录。
 
 ### （三）运行期维护
 
@@ -62,7 +62,7 @@
 
 ### （一）入口和分类
 
-浏览器只有一个 File 选择入口。上传时客户端识别受支持的图片类型并调用图片接口；其他内容走通用文件接口。内部资产 `kind` 为 `image` 或 `file`，历史消息类型相应标记，图片不是独立的文件选择入口。
+浏览器只有一个 File 选择入口，并统一调用 `POST /api/assets`。服务端仅按规范扩展名判断图片（JPG/JPEG、PNG、GIF、WEBP、HEIC、HEIF）；其余内容一律作为通用文件处理。内部资产 `kind` 为 `image` 或 `file`，历史消息类型相应标记，图片不是独立的文件选择入口。
 
 图片允许 JPG/JPEG、PNG、GIF、WEBP、HEIC、HEIF，最大 100 MiB。通用文件不限制扩展名和 MIME 类型，最大 512 MiB。附件按原始字节保存；HEIC/HEIF 不转码。服务端不执行上传内容。
 
@@ -93,10 +93,10 @@ SQLite 的 `messages` 表保存消息 ID、发送设备标记、类型、文本�
 
 - `POST /api/messages`：创建文字消息。
 - `GET /api/messages`：读取最近历史；支持 `before` 和 `after` 游标。
-- `GET /api/history`：读取附件历史；支持 `type=all|image|file` 和文件名关键词 `q`，仅返回相对资源链接及 `AVAILABLE`、`MISSING` 或 `PENDING` 状态。
+- `GET /api/history`：读取附件历史；支持 `type=all|image|file`、文件格式 `format`、Unicode 不区分大小写的文件名关键词 `q`、最多 100 项的 `limit` 与稳定的 `before` 游标。响应包含发送设备、扩展名、格式分类、归档日期、总数及下一页游标。
 - `DELETE /api/messages/{message_id}`：软删除消息并按引用关系处理附件。
-- `POST /api/assets/images`：上传单张图片。
-- `POST /api/assets/files`：上传一个通用文件。
+- `POST /api/assets`：统一上传入口，由服务端分类。
+- `POST /api/assets/images`、`POST /api/assets/files`：保留给旧客户端的兼容入口。
 - `GET /api/assets/{asset_id}`：在线读取可用资源。
 - `GET /api/assets/{asset_id}?download=1`：下载资源。
 - `GET /api/assets/{asset_id}?preview=1`：对允许预览的 PDF 返回在线响应。
@@ -116,6 +116,8 @@ SQLite 的 `messages` 表保存消息 ID、发送设备标记、类型、文本�
 - [ ] 旧项目数据复制后，源 `data/` 文件仍存在，目标文件未覆盖冲突内容。
 - [ ] 上传后附件位于日期归档，数据库仅保存元数据和相对路径。
 - [ ] 暂存清理只作用于过期普通 `.partial` 文件。
+- [ ] 从不在导入 `app.main` 时创建目录、数据库或暂存文件；生命周期启动后才执行引导。
+- [ ] Windows 3.11、Windows 3.13 与 Ubuntu 3.13 持续集成均通过。
 - [ ] 历史记录在附件缺失时仍保留，资产标记为 `MISSING`。
 - [ ] 业务接口鉴权、软删除及附件状态行为通过自动化覆盖。
 

@@ -217,6 +217,40 @@ def test_bootstrap_copies_legacy_project_data_and_retains_source(
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
+def test_bootstrap_cleans_only_its_migrated_legacy_asset_copy(tmp_path: Path) -> None:
+    legacy_dir = tmp_path / "legacy-project-data"
+    app_data_dir = tmp_path / "app-data"
+    user_files_dir = tmp_path / "user-files"
+    legacy_database = legacy_dir / "private_send.db"
+    _create_v02_database(legacy_database, legacy_dir)
+    original_asset = legacy_dir / "assets" / "legacy-image.jpg"
+    source_asset = legacy_dir / "assets" / "2026" / "01" / "02" / "legacy-image.jpg"
+    source_asset.parent.mkdir(parents=True)
+    source_asset.write_bytes(original_asset.read_bytes())
+    original_asset.unlink()
+    with sqlite3.connect(legacy_database) as connection:
+        connection.execute(
+            "UPDATE assets SET relative_path = ? WHERE id = 'legacy-asset'",
+            ("assets/2026/01/02/legacy-image.jpg",),
+        )
+
+    from app.main import bootstrap_app
+
+    _, _, service, _ = bootstrap_app(
+        app_data_dir=app_data_dir,
+        user_files_dir=user_files_dir,
+        legacy_data_dir=legacy_dir,
+    )
+
+    migrated = service.repository.get("legacy-asset")
+    assert migrated is not None
+    assert migrated.relative_path == "2026-01-01/legacy.jpg"
+    assert (user_files_dir / migrated.relative_path).read_bytes() == b"legacy image bytes"
+    assert source_asset.read_bytes() == b"legacy image bytes"
+    assert not (user_files_dir / "assets").exists()
+    assert not (app_data_dir / ".legacy_assets_copy_owned").exists()
+
+
 def test_bootstrap_preserves_conflicting_destination_files_and_copies_missing_legacy_files(
     tmp_path: Path,
 ) -> None:
@@ -332,7 +366,9 @@ def test_repository_construction_does_not_migrate_schema(tmp_path: Path) -> None
 
     from app.main import create_app
 
-    create_app(data_dir=tmp_path)
+    application = create_app(data_dir=tmp_path)
+    with TestClient(application):
+        pass
 
     migrated_database_path = tmp_path / "private_send.db"
     with get_connection(migrated_database_path) as connection:
@@ -353,10 +389,9 @@ def test_create_app_migrates_legacy_database_name_and_keeps_history(
     from app.main import create_app
 
     application = create_app(data_dir=tmp_path)
-
-    assert private_database.is_file()
-    assert legacy_database.exists()
     with TestClient(application) as client:
+        assert private_database.is_file()
+        assert legacy_database.exists()
         response = client.get(
             "/api/messages",
             headers={"Authorization": f"Bearer {application.state.token}"},

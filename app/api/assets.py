@@ -9,14 +9,49 @@ from fastapi.responses import FileResponse
 
 from app.core.security import require_bearer_token
 from app.models.asset import Asset, HistoryResponse
-from app.services.asset_service import AssetService, UploadError, asset_service
+from app.repositories.asset_repository import HISTORY_FORMATS
+from app.services.asset_service import AssetService, UploadError
 
 
 router = APIRouter(prefix="/api", tags=["assets"])
 
 
 def _service_for(request: Request) -> AssetService:
-    return getattr(request.app.state, "asset_service", asset_service)
+    service = getattr(request.app.state, "asset_service", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="Service is initializing")
+    return service
+
+
+def _upload_response(message, asset: Asset) -> dict[str, object]:
+    """Return upload metadata without exposing a user-specific filesystem path."""
+
+    archive_date = asset.relative_path.replace("\\", "/").split("/", 1)[0]
+    return {
+        "success": True,
+        "message": message,
+        "asset": asset,
+        "archive": {
+            "date": archive_date,
+            "display_dir": f"Windows Downloads\\file_private_send\\{archive_date}",
+        },
+    }
+
+
+@router.post("/assets")
+async def upload_asset(
+    request: Request,
+    file: UploadFile = File(...),
+    sender: str = Form(...),
+    _: str = Depends(require_bearer_token),
+) -> dict[str, object]:
+    """Persist an attachment using server-owned image/file classification."""
+
+    try:
+        message, asset = await _service_for(request).upload(file, sender)
+    except UploadError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return _upload_response(message, asset)
 
 
 @router.get("/history", response_model=HistoryResponse)
@@ -30,6 +65,9 @@ def list_history(
         max_length=200,
         description="Optional case-insensitive substring of the stored filename.",
     ),
+    format: str = Query(default="all"),
+    limit: int = Query(default=100, ge=1, le=100),
+    before: str | None = Query(default=None),
     _: str = Depends(require_bearer_token),
 ) -> HistoryResponse:
     """Return active attachment history newest first.
@@ -41,8 +79,15 @@ def list_history(
     """
 
     keyword = q.strip() if q and q.strip() else None
+    if format not in HISTORY_FORMATS:
+        raise HTTPException(status_code=422, detail="Unknown history format")
     repository = _service_for(request).repository
-    items = repository.list_history(kind=type, keyword=keyword)
+    try:
+        items, has_more, next_cursor = repository.list_history(
+            kind=type, file_format=format, keyword=keyword, limit=limit, before=before
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     service = _service_for(request)
     for index, item in enumerate(items):
         if item.availability != "AVAILABLE":
@@ -64,7 +109,9 @@ def list_history(
                     "MISSING" if asset.status == "MISSING" else "PENDING"
                 ),
             })
-    return HistoryResponse(items=items, count=len(items))
+    return HistoryResponse(
+        items=items, count=len(items), has_more=has_more, next_cursor=next_cursor
+    )
 
 
 def _validate_disposition_flags(*, download: bool, preview: bool) -> None:
@@ -108,7 +155,7 @@ async def upload_image(
         message, asset = await _service_for(request).upload_image(file, sender)
     except UploadError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-    return {"success": True, "message": message, "asset": asset}
+    return _upload_response(message, asset)
 
 
 @router.post("/assets/files")
@@ -124,7 +171,7 @@ async def upload_file(
         message, asset = await _service_for(request).upload_file(file, sender)
     except UploadError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-    return {"success": True, "message": message, "asset": asset}
+    return _upload_response(message, asset)
 
 
 @router.get("/assets/{asset_id}")

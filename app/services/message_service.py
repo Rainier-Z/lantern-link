@@ -28,6 +28,3 @@ class MessageService:
 
     def delete_message(self, message_id: str) -> Message | None:
         return self.repository.soft_delete(message_id)
-
-
-message_service = MessageService()

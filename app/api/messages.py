@@ -7,21 +7,26 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from app.core.config import MESSAGE_MAX_BYTES
 from app.core.security import require_bearer_token
 from app.models.message import Message, MessageCreate
-from app.services.asset_service import AssetService, asset_service
-from app.services.message_service import message_service
+from app.services.asset_service import AssetService
 
 
 router = APIRouter(prefix="/api", tags=["messages"])
 
 
 def _service_for(request: Request):
-    """Use the service bound to the application, with the default as fallback."""
+    """Return the service created by the application's startup lifecycle."""
 
-    return getattr(request.app.state, "message_service", message_service)
+    service = getattr(request.app.state, "message_service", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="Service is initializing")
+    return service
 
 
 def _asset_service_for(request: Request) -> AssetService:
-    return getattr(request.app.state, "asset_service", asset_service)
+    service = getattr(request.app.state, "asset_service", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="Service is initializing")
+    return service
 
 
 @router.post("/messages")

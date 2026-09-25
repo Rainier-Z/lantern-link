@@ -20,12 +20,18 @@ def app_module() -> Any:
     return importlib.import_module("app.main")
 
 
-@pytest.fixture(scope="session")
-def application(app_module: Any) -> FastAPI:
-    app = getattr(app_module, "app", None)
-    if not isinstance(app, FastAPI):
-        pytest.fail("app.main must expose a FastAPI instance named 'app'")
-    return app
+@pytest.fixture
+def application(app_module: Any, tmp_path) -> FastAPI:
+    """Create a fresh app whose lifecycle can only touch ``tmp_path``."""
+
+    factory = getattr(app_module, "create_app", None)
+    if not callable(factory):
+        pytest.fail("app.main must expose create_app")
+    return factory(
+        data_dir=tmp_path / "app-data",
+        user_files_dir=tmp_path / "Downloads" / "file_private_send",
+        legacy_data_dir=tmp_path / "legacy",
+    )
 
 
 @pytest.fixture

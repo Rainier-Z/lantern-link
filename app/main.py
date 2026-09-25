@@ -7,7 +7,7 @@ import os
 import tempfile
 import webbrowser
 import shutil
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from io import BytesIO
 from pathlib import Path
 
@@ -44,6 +44,7 @@ from app.services.asset_service import AssetService
 LOGGER = logging.getLogger(__name__)
 
 STATIC_NO_CACHE_PATHS = {"/", "/app.js", "/style.css"}
+LEGACY_ASSETS_CLEANUP_MARKER = ".legacy_assets_copy_owned"
 
 
 def configure_cache_policy(application: FastAPI) -> None:
@@ -145,6 +146,8 @@ def bootstrap_app(
     )
     database_path = resolve_database_path(app_data_path)
 
+    cleanup_legacy_assets = False
+    cleanup_marker = app_data_path / LEGACY_ASSETS_CLEANUP_MARKER
     legacy_database = source_path / LEGACY_DATABASE_NAME
     if database_path.exists():
         if legacy_database.is_file():
@@ -171,7 +174,13 @@ def bootstrap_app(
             legacy_assets.is_dir()
             and legacy_assets.resolve() != target_assets.resolve()
         ):
+            target_assets_was_absent = not target_assets.exists()
             _copy_missing_tree(legacy_assets, target_assets)
+            if target_assets_was_absent:
+                app_data_path.mkdir(parents=True, exist_ok=True)
+                cleanup_marker.touch(exist_ok=True)
+
+    cleanup_legacy_assets = cleanup_marker.is_file()
 
     app_data_path.mkdir(parents=True, exist_ok=True)
     files_path.mkdir(parents=True, exist_ok=True)
@@ -180,8 +189,16 @@ def bootstrap_app(
         database_path,
         staging_dir=app_data_path / "staging",
         user_files_dir=files_path,
+        cleanup_legacy_assets=cleanup_legacy_assets,
     )
     service.recover_delete_pending()
+    if cleanup_legacy_assets:
+        try:
+            service.assets_dir.rmdir()
+        except OSError:
+            pass
+        else:
+            cleanup_marker.unlink(missing_ok=True)
     service.scan_staging()
     message_service = MessageService(MessageRepository(database_path))
     return database_path, files_path, service, message_service
@@ -251,22 +268,28 @@ def create_app(
     user_files_dir: str | Path | None = None,
     legacy_data_dir: str | Path | None = None,
 ) -> FastAPI:
-    """Build and bootstrap an application bound to selected data directories.
+    """Build an application bound to selected data directories.
 
-    The factory is used by tests and future embedded instances so each app can
-    use an isolated SQLite file without changing the module-level server app.
+    The factory deliberately performs no storage work.  Lifespan startup owns
+    bootstrapping so importing ``app.main`` cannot create user directories or
+    open a database.
     """
 
-    database_path, _, asset_bound_service, service = bootstrap_app(
-        app_data_dir=data_dir,
-        user_files_dir=user_files_dir,
-        legacy_data_dir=legacy_data_dir,
-    )
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        _, _, asset_bound_service, message_bound_service = bootstrap_app(
+            app_data_dir=data_dir,
+            user_files_dir=user_files_dir,
+            legacy_data_dir=legacy_data_dir,
+        )
+        application.state.message_service = message_bound_service
+        application.state.asset_service = asset_bound_service
+        yield
 
-    application = FastAPI(title="private_send", version=APP_VERSION)
+    application = FastAPI(
+        title="private_send", version=APP_VERSION, lifespan=lifespan
+    )
     application.state.token = get_access_token()
-    application.state.message_service = service
-    application.state.asset_service = asset_bound_service
     application.include_router(messages_router)
     application.include_router(assets_router)
     configure_cache_policy(application)

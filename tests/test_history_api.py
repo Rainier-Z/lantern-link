@@ -13,8 +13,10 @@ from app.main import create_app
 def _client_for(tmp_path: Path) -> tuple[TestClient, dict[str, str], Path]:
     user_files_dir = tmp_path / "Downloads" / "file_private_send"
     app = create_app(data_dir=tmp_path, user_files_dir=user_files_dir)
+    client = TestClient(app)
+    client.__enter__()
     return (
-        TestClient(app),
+        client,
         {"Authorization": f"Bearer {app.state.token}"},
         user_files_dir,
     )
@@ -28,12 +30,13 @@ def _upload(
     content: bytes,
     mime_type: str,
     kind: str,
+    sender: str = "pc",
 ) -> dict[str, object]:
     endpoint = "/api/assets/images" if kind == "image" else "/api/assets/files"
     response = client.post(
         endpoint,
         headers=headers,
-        data={"sender": "pc"},
+        data={"sender": sender},
         files={"file": (filename, content, mime_type)},
     )
     assert response.status_code == 200, response.text
@@ -216,3 +219,44 @@ def test_history_normalizes_archive_pending_to_pending_availability(
     assert item["availability"] == "PENDING"
     assert item["asset_url"] is None
     assert item["download_url"] is None
+
+
+def test_history_returns_format_direction_archive_date_and_cursor_pages(
+    tmp_path: Path,
+) -> None:
+    client, headers, _ = _client_for(tmp_path)
+    first = _upload(
+        client, headers, filename="report.pdf", content=b"pdf", mime_type="application/pdf", kind="file", sender="pc"
+    )
+    second = _upload(
+        client, headers, filename="archive.zip", content=b"zip", mime_type="application/zip", kind="file", sender="iphone"
+    )
+    _upload(
+        client, headers, filename="photo.jpg", content=b"jpg", mime_type="image/jpeg", kind="image", sender="pc"
+    )
+
+    page = client.get("/api/history?limit=2", headers=headers)
+
+    assert page.status_code == 200, page.text
+    body = page.json()
+    assert body["count"] == 2
+    assert body["has_more"] is True
+    assert body["next_cursor"] == body["items"][-1]["message_id"]
+    assert body["items"][0]["sender"] == "pc"
+    assert body["items"][1]["file_format"] == "zip"
+    assert body["items"][1]["extension"] == ".zip"
+    assert body["items"][1]["archive_date"] == second["asset"]["relative_path"].split("/", 1)[0]
+    assert body["items"][0]["file_format"] is None
+
+    next_page = client.get(
+        f"/api/history?limit=2&before={body['next_cursor']}", headers=headers
+    )
+    assert next_page.status_code == 200, next_page.text
+    assert next_page.json()["has_more"] is False
+    assert [item["message_id"] for item in body["items"] + next_page.json()["items"]] == [
+        first["message"]["id"], second["message"]["id"],
+        body["items"][0]["message_id"],
+    ][::-1]
+
+    pdf_only = client.get("/api/history?format=pdf", headers=headers)
+    assert [item["filename"] for item in pdf_only.json()["items"]] == ["report.pdf"]

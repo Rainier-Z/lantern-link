@@ -25,6 +25,9 @@ def get_connection(path: Path | str | None = None) -> sqlite3.Connection:
     connection = sqlite3.connect(database_path, timeout=30)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.create_function(
+        "UNICODE_CASEFOLD", 1, lambda value: value.casefold() if value else ""
+    )
     return connection
 
 

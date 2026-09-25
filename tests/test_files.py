@@ -19,8 +19,10 @@ def client_for(tmp_path: Path) -> tuple[TestClient, dict[str, str], Path]:
 
     user_files_dir = tmp_path / "Downloads" / "file_private_send"
     application = create_app(data_dir=tmp_path, user_files_dir=user_files_dir)
+    client = TestClient(application)
+    client.__enter__()
     return (
-        TestClient(application),
+        client,
         {"Authorization": f"Bearer {application.state.token}"},
         user_files_dir,
     )
@@ -120,6 +122,24 @@ def test_uploads_use_original_names_collision_suffix_and_user_root_relative_path
     assert (user_files_dir / second_path).read_bytes() == b"second bytes"
     assert first["stored_filename"] == "report.txt"
     assert second["stored_filename"] == "report (1).txt"
+
+
+def test_deleted_formal_path_is_never_reused_by_a_later_upload(tmp_path: Path) -> None:
+    client, headers, user_files_dir = client_for(tmp_path)
+    first = upload_file(
+        client, headers, "report.pdf", b"first", content_type="application/pdf"
+    ).json()["asset"]
+    (user_files_dir / first["relative_path"]).unlink()
+
+    second = upload_file(
+        client, headers, "report.pdf", b"second", content_type="application/pdf"
+    ).json()["asset"]
+
+    assert first["relative_path"].endswith("/report.pdf")
+    assert second["relative_path"].endswith("/report (1).pdf")
+    assert first["relative_path"] != second["relative_path"]
+    assert client.get(f"/api/assets/{first['id']}", headers=headers).status_code == 410
+    assert client.get(f"/api/assets/{second['id']}", headers=headers).content == b"second"
 
 
 def test_upload_filename_is_normalized_to_a_safe_archive_basename(

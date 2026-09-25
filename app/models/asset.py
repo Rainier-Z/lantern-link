@@ -46,10 +46,14 @@ class HistoryItem(BaseModel):
     message_id: str
     asset_id: str
     kind: Literal["image", "file"]
+    sender: Literal["pc", "iphone"]
     filename: str
     display_name: str
+    extension: str
+    file_format: str | None
     size: int
     created_at: datetime
+    archive_date: str
     asset_url: str | None
     download_url: str | None
     availability: Literal["AVAILABLE", "MISSING", "PENDING"]
@@ -62,3 +66,5 @@ class HistoryResponse(BaseModel):
 
     items: list[HistoryItem]
     count: int
+    has_more: bool
+    next_cursor: str | None

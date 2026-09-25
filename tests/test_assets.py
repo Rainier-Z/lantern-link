@@ -16,8 +16,10 @@ from app.repositories.asset_repository import AssetRepository
 def client_for(tmp_path: Path) -> tuple[TestClient, dict[str, str], Path]:
     user_files_dir = tmp_path / "Downloads" / "file_private_send"
     app = create_app(data_dir=tmp_path, user_files_dir=user_files_dir)
+    client = TestClient(app)
+    client.__enter__()
     return (
-        TestClient(app),
+        client,
         {"Authorization": f"Bearer {app.state.token}"},
         user_files_dir,
     )
@@ -182,14 +184,13 @@ def test_legacy_asset_import_copies_to_date_archive_and_updates_metadata(
         legacy_data_dir=legacy_dir,
     )
     headers = {"Authorization": f"Bearer {app.state.token}"}
-    migrated_asset = AssetRepository(app_data_dir / "private_send.db").get(asset_id)
-
-    assert migrated_asset is not None
-    assert migrated_asset.relative_path == "2026-01-02/old trip.jpg"
-    assert (user_files_dir / migrated_asset.relative_path).read_bytes() == payload
-    assert source_path.read_bytes() == payload
-    assert (user_files_dir / source_relative_path).read_bytes() == payload
     with TestClient(app) as client:
+        migrated_asset = AssetRepository(app_data_dir / "private_send.db").get(asset_id)
+        assert migrated_asset is not None
+        assert migrated_asset.relative_path == "2026-01-02/old trip.jpg"
+        assert (user_files_dir / migrated_asset.relative_path).read_bytes() == payload
+        assert source_path.read_bytes() == payload
+        assert not (user_files_dir / "assets").exists()
         download = client.get(f"/api/assets/{asset_id}", headers=headers)
         assert download.status_code == 200, download.text
         assert download.content == payload

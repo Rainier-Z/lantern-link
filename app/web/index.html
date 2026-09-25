@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#0b1523">
     <meta name="description" content="Private text link between your devices.">
     <title>private_send</title>
-    <link rel="stylesheet" href="/style.css?v=0.3.2">
+    <link rel="stylesheet" href="/style.css">
   </head>
   <body>
     <main class="app-shell" id="app-shell">
@@ -20,7 +20,6 @@
         </div>
 
         <div class="topbar-actions">
-          <button class="history-toggle" id="history-toggle" type="button" aria-controls="history-drawer" aria-expanded="false">History</button>
           <div class="connection-wrap" aria-live="polite">
             <span class="status-dot is-connecting" id="status-dot" aria-hidden="true"></span>
             <span id="connection-label">Connecting</span>
@@ -33,13 +32,16 @@
           <p class="section-label">This browser is</p>
           <p class="identity-copy" id="identity-copy">Preparing your device identity…</p>
         </div>
-        <label class="device-picker">
-          <span class="sr-only">Choose this browser's device</span>
-          <select id="device-select" autocomplete="off">
-            <option value="pc">PC</option>
-            <option value="iphone">iPhone</option>
-          </select>
-        </label>
+        <div class="identity-actions">
+          <button class="history-toggle" id="history-toggle" type="button" aria-label="Open history" aria-controls="history-drawer" aria-expanded="false">🕘</button>
+          <label class="device-picker">
+            <span class="sr-only">Choose this browser's device</span>
+            <select id="device-select" autocomplete="off">
+              <option value="pc">PC</option>
+              <option value="iphone">iPhone</option>
+            </select>
+          </label>
+        </div>
       </section>
 
       <section class="conversation" aria-label="Conversation">
@@ -113,11 +115,20 @@
           <option value="image">Images</option>
           <option value="file">Files</option>
         </select>
+        <label class="sr-only" for="history-format">Filter by format</label>
+        <select id="history-format" hidden>
+          <option value="all">All formats</option>
+          <option value="pdf">PDF</option><option value="word">Word</option><option value="powerpoint">PowerPoint</option><option value="excel">Excel</option>
+          <option value="txt">TXT</option><option value="markdown">Markdown</option><option value="rtf">RTF</option><option value="csv">CSV</option>
+          <option value="json">JSON</option><option value="xml">XML</option><option value="yaml">YAML</option><option value="zip">ZIP</option>
+          <option value="rar">RAR</option><option value="7z">7Z</option><option value="tar">TAR</option><option value="gz">GZ</option><option value="epub">EPUB</option><option value="other">Other</option>
+        </select>
         <label class="sr-only" for="history-search">Search filenames</label>
         <input id="history-search" type="search" maxlength="200" placeholder="Search files">
       </div>
       <p class="history-status" id="history-status" role="status" aria-live="polite"></p>
       <div class="history-list" id="history-list" role="tabpanel" aria-labelledby="history-tab-date" tabindex="0"></div>
+      <button class="history-more" id="history-more" type="button" hidden>Load more</button>
     </aside>
 
     <div class="batch-toast" id="batch-toast" role="status" aria-live="polite" hidden></div>
@@ -128,6 +139,6 @@
       <a class="modal-download" id="modal-download" href="#">Download</a>
     </dialog>
 
-    <script src="/app.js?v=0.3.2" defer></script>
+    <script src="/app.js" defer></script>
   </body>
 </html>

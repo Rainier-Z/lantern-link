@@ -18,6 +18,42 @@ LEGACY_DATABASE_NAME = "rainier.db"
 _LOGGER = logging.getLogger(__name__)
 
 
+def _resolve_windows_downloads() -> Path | None:
+    """Return the redirected Windows Downloads known folder when available."""
+
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        class _Guid(ctypes.Structure):
+            _fields_ = [
+                ("Data1", ctypes.c_ulong),
+                ("Data2", ctypes.c_ushort),
+                ("Data3", ctypes.c_ushort),
+                ("Data4", ctypes.c_ubyte * 8),
+            ]
+
+        folder_id = _Guid(
+            0x374DE290,
+            0x123F,
+            0x4565,
+            (ctypes.c_ubyte * 8)(0x91, 0x64, 0x39, 0xC4, 0x92, 0x5E, 0x46, 0x7B),
+        )
+        value = ctypes.c_wchar_p()
+        result = ctypes.windll.shell32.SHGetKnownFolderPath(
+            ctypes.byref(folder_id), 0, None, ctypes.byref(value)
+        )
+        if result != 0 or not value.value:
+            return None
+        try:
+            return Path(value.value)
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(value)
+    except (AttributeError, OSError):
+        return None
+
+
 def resolve_database_path(data_dir: Path | str | None = None) -> Path:
     """Return the selected database path without mutating stored data."""
 
@@ -39,6 +75,10 @@ def resolve_user_files_dir(
 ) -> Path:
     """Return the user-visible file root, with an injectable profile path."""
 
+    if user_profile is None:
+        downloads = _resolve_windows_downloads()
+        if downloads is not None:
+            return downloads / "file_private_send"
     base = user_profile or os.environ.get("USERPROFILE")
     if base is None:
         base = Path.home()

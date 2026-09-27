@@ -22,10 +22,10 @@ from app.services import asset_service
 
 
 def service_for(tmp_path: Path) -> AssetService:
-    database = tmp_path / "app-data" / "private_send.db"
+    database = tmp_path / "app-data" / "lantern_link.db"
     initialize_database(database)
     return AssetService(
-        database, user_files_dir=tmp_path / "Downloads" / "file_private_send"
+        database, user_files_dir=tmp_path / "Downloads" / "lantern_link"
     )
 
 
@@ -52,7 +52,7 @@ def allow_completion(service: AssetService) -> None:
 def archived_files(service: AssetService) -> list[Path]:
     return sorted(
         path for path in service.user_files_dir.glob("????-??-??/*")
-        if not path.name.startswith(".private_send_")
+        if not path.name.startswith(".lantern_link_")
     )
 
 
@@ -302,7 +302,7 @@ def test_fresh_environment_import_and_bootstrap_initialize_before_recovery(tmp_p
              "service = app.state.asset_service; "
              "assert root in service.database_path.resolve().parents; "
              "assert service.database_path.resolve() == "
-             "(Path(os.environ['TEST_APP_DATA']) / 'private_send.db').resolve(); "
+             "(Path(os.environ['TEST_APP_DATA']) / 'lantern_link.db').resolve(); "
              "assert service.user_files_dir.resolve() == "
              "Path(os.environ['TEST_USER_FILES']).resolve(); "
              "assert root in service.user_files_dir.resolve().parents; "
@@ -371,7 +371,7 @@ asyncio.run(service.persist_upload(
     assert source.read_bytes() == b"complete upload"
     if crash_point != "after_publish":
         assert not formal.exists()
-    unrelated = temporary.parent / ".private_send_unrelated.partial"
+    unrelated = temporary.parent / ".lantern_link_unrelated.partial"
     unrelated.write_bytes(b"user file")
 
     recovered = service_for(tmp_path)

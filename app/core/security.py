@@ -15,7 +15,7 @@ def generate_access_token() -> str:
 
 
 ACCESS_TOKEN = generate_access_token()
-SESSION_COOKIE_NAME = "private_send_session"
+SESSION_COOKIE_NAME = "lantern_link_session"
 
 
 def get_access_token() -> str:

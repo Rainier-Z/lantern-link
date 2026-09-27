@@ -16,6 +16,7 @@ _BENCHMARK_NETWORK = ipaddress.ip_network("198.18.0.0/15")
 _ROUTE_PROBE_ADDRESS = ("8.8.8.8", 80)
 _ROUTE_PROBE_TIMEOUT_SECONDS = 0.5
 _DEFAULT_PORT = 9527
+LAN_IP_OVERRIDE_ENV = "LANTERN_LINK_LAN_IP"
 
 
 @dataclass(frozen=True)
@@ -89,11 +90,11 @@ def get_local_ipv4_candidates() -> list[str]:
 def get_lan_network_info(port: int = _DEFAULT_PORT) -> LanNetworkInfo:
     """Select a pairing address, preferring override, route, hostname, then loopback."""
 
-    override = os.environ.get("PRIVATE_SEND_LAN_IP")
+    override = os.environ.get(LAN_IP_OVERRIDE_ENV)
     if override is not None:
         normalized = override.strip()
         if not is_usable_lan_ipv4(normalized):
-            raise ValueError("PRIVATE_SEND_LAN_IP must be a usable private IPv4 address")
+            raise ValueError(f"{LAN_IP_OVERRIDE_ENV} must be a usable private IPv4 address")
         candidates = tuple(get_local_ipv4_candidates())
         return LanNetworkInfo(normalized, "override", candidates, port, False)
 

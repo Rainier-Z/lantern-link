@@ -17,7 +17,7 @@ def client_for(tmp_path: Path) -> tuple[TestClient, dict[str, str], Path]:
 
     from app.main import create_app
 
-    user_files_dir = tmp_path / "Downloads" / "file_private_send"
+    user_files_dir = tmp_path / "Downloads" / "lantern_link"
     application = create_app(data_dir=tmp_path, user_files_dir=user_files_dir)
     client = TestClient(application)
     client.__enter__()

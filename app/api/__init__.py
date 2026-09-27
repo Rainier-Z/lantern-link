@@ -1,1 +1,1 @@
-"""HTTP API routers for private_send."""
+"""HTTP API routers for Lantern Link."""

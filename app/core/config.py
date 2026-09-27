@@ -1,4 +1,4 @@
-"""Runtime configuration for private_send."""
+"""Runtime configuration for Lantern Link."""
 
 import logging
 import os
@@ -12,8 +12,11 @@ HOST = "0.0.0.0"
 PORT = 9527
 MESSAGE_MAX_BYTES = 64 * 1024
 
-DATABASE_NAME = "private_send.db"
-# Older database filename retained for migration only.
+APP_DATA_DIRECTORY_NAME = "lantern_link"
+USER_FILES_DIRECTORY_NAME = "lantern_link"
+DATABASE_NAME = "lantern_link.db"
+# Older product names remain readable only as migration sources.
+LEGACY_PRIVATE_SEND_DATABASE_NAME = "private_send.db"
 LEGACY_DATABASE_NAME = "rainier.db"
 _LOGGER = logging.getLogger(__name__)
 
@@ -62,7 +65,16 @@ def resolve_database_path(data_dir: Path | str | None = None) -> Path:
 
 
 def resolve_app_data_dir(local_app_data: Path | str | None = None) -> Path:
-    """Return the private_send app-data directory, with an injectable base."""
+    """Return the Lantern Link app-data directory, with an injectable base."""
+
+    base = local_app_data or os.environ.get("LOCALAPPDATA")
+    if base is None:
+        base = Path.home() / "AppData" / "Local"
+    return Path(base) / APP_DATA_DIRECTORY_NAME
+
+
+def resolve_legacy_app_data_dir(local_app_data: Path | str | None = None) -> Path:
+    """Return the former private_send app-data location for one-way migration."""
 
     base = local_app_data or os.environ.get("LOCALAPPDATA")
     if base is None:
@@ -74,6 +86,21 @@ def resolve_user_files_dir(
     user_profile: Path | str | None = None,
 ) -> Path:
     """Return the user-visible file root, with an injectable profile path."""
+
+    if user_profile is None:
+        downloads = _resolve_windows_downloads()
+        if downloads is not None:
+            return downloads / USER_FILES_DIRECTORY_NAME
+    base = user_profile or os.environ.get("USERPROFILE")
+    if base is None:
+        base = Path.home()
+    return Path(base) / "Downloads" / USER_FILES_DIRECTORY_NAME
+
+
+def resolve_legacy_user_files_dir(
+    user_profile: Path | str | None = None,
+) -> Path:
+    """Return the former private_send archive root for one-way migration."""
 
     if user_profile is None:
         downloads = _resolve_windows_downloads()

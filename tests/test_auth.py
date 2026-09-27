@@ -6,8 +6,8 @@ from fastapi.testclient import TestClient
 from app.core.security import SESSION_COOKIE_NAME, get_access_token
 
 
-def test_session_cookie_uses_private_send_name():
-    assert SESSION_COOKIE_NAME == "private_send_session"
+def test_session_cookie_uses_lantern_link_name():
+    assert SESSION_COOKIE_NAME == "lantern_link_session"
 
 
 @pytest.mark.parametrize("method", ["get", "post"])

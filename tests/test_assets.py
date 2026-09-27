@@ -14,7 +14,7 @@ from app.repositories.asset_repository import AssetRepository
 
 
 def client_for(tmp_path: Path) -> tuple[TestClient, dict[str, str], Path]:
-    user_files_dir = tmp_path / "Downloads" / "file_private_send"
+    user_files_dir = tmp_path / "Downloads" / "lantern_link"
     app = create_app(data_dir=tmp_path, user_files_dir=user_files_dir)
     client = TestClient(app)
     client.__enter__()
@@ -91,7 +91,7 @@ def test_missing_file_returns_gone_and_delete_removes_last_reference(tmp_path: P
 
     missing = client.get(f"/api/assets/{asset_id}", headers=headers)
     assert missing.status_code == 410
-    with get_connection(tmp_path / "private_send.db") as connection:
+    with get_connection(tmp_path / "lantern_link.db") as connection:
         assert connection.execute(
             "SELECT status FROM assets WHERE id = ?", (asset_id,)
         ).fetchone()[0] == "MISSING"
@@ -124,7 +124,7 @@ def test_delete_pending_asset_is_retried_on_service_startup(
     deleted = client.delete(f"/api/messages/{message_id}", headers=headers)
 
     assert deleted.status_code == 200, deleted.text
-    pending = AssetRepository(tmp_path / "private_send.db").get(asset_id)
+    pending = AssetRepository(tmp_path / "lantern_link.db").get(asset_id)
     assert pending is not None
     assert pending.status == "DELETE_PENDING"
     assert asset_path.is_file()
@@ -146,7 +146,7 @@ def test_legacy_asset_import_copies_to_date_archive_and_updates_metadata(
 ) -> None:
     legacy_dir = tmp_path / "legacy"
     app_data_dir = tmp_path / "app-data"
-    user_files_dir = tmp_path / "Downloads" / "file_private_send"
+    user_files_dir = tmp_path / "Downloads" / "lantern_link"
     database_path = legacy_dir / "private_send.db"
     asset_id = "legacy-asset"
     source_relative_path = f"assets/2026/01/02/{asset_id}.jpg"
@@ -185,7 +185,7 @@ def test_legacy_asset_import_copies_to_date_archive_and_updates_metadata(
     )
     headers = {"Authorization": f"Bearer {app.state.token}"}
     with TestClient(app) as client:
-        migrated_asset = AssetRepository(app_data_dir / "private_send.db").get(asset_id)
+        migrated_asset = AssetRepository(app_data_dir / "lantern_link.db").get(asset_id)
         assert migrated_asset is not None
         assert migrated_asset.relative_path == "2026-01-02/old trip.jpg"
         assert (user_files_dir / migrated_asset.relative_path).read_bytes() == payload
@@ -291,7 +291,7 @@ def test_asset_status_whitelist_serves_only_available_assets(
     client, headers, _ = client_for(tmp_path)
     asset_id = upload(client, headers, "status.jpg", b"image").json()["asset"]["id"]
 
-    with get_connection(tmp_path / "private_send.db") as connection:
+    with get_connection(tmp_path / "lantern_link.db") as connection:
         connection.execute("UPDATE assets SET status = ? WHERE id = ?", (status, asset_id))
     response = client.get(f"/api/assets/{asset_id}", headers=headers)
     assert response.status_code == expected_status, (status, response.text)
@@ -356,7 +356,7 @@ def test_mutually_exclusive_flags_precede_asset_lookup_and_status(
 
     actual_statuses = []
     for status in ("AVAILABLE", "MISSING", "DELETE_PENDING", "DELETED"):
-        with get_connection(tmp_path / "private_send.db") as connection:
+        with get_connection(tmp_path / "lantern_link.db") as connection:
             connection.execute(
                 "UPDATE assets SET status = ? WHERE id = ?", (status, asset_id)
             )

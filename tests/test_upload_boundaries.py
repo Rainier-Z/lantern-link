@@ -24,7 +24,7 @@ def _upload(payload: bytes) -> UploadFile:
 
 def test_upload_accepts_exactly_maximum_bytes(tmp_path) -> None:
     app_data_dir = tmp_path / "app-data"
-    user_files_dir = tmp_path / "Downloads" / "file_private_send"
+    user_files_dir = tmp_path / "Downloads" / "lantern_link"
     database_path = app_data_dir / "database.sqlite3"
     initialize_database(database_path)
     service = AssetService(
@@ -53,7 +53,7 @@ def test_upload_accepts_exactly_maximum_bytes(tmp_path) -> None:
 
 def test_upload_rejects_one_byte_over_limit_without_persisting_anything(tmp_path) -> None:
     app_data_dir = tmp_path / "app-data"
-    user_files_dir = tmp_path / "Downloads" / "file_private_send"
+    user_files_dir = tmp_path / "Downloads" / "lantern_link"
     database_path = app_data_dir / "database.sqlite3"
     initialize_database(database_path)
     service = AssetService(

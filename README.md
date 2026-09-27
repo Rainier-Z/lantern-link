@@ -1,6 +1,6 @@
-# 一、private_send 1.0
+# 一、Lantern Link 1.0
 
-`private_send` 是供个人 Windows 电脑与同一可信局域网内的 iPhone 传送文字、图片和文件的本机工具。Windows 上运行 HTTP 服务，iPhone 使用 Safari 配对并访问。数据保存在运行程序的 Windows 电脑上；本产品不提供云端存储、账号服务或公网中继。
+`Lantern Link` 是供个人 Windows 电脑与同一可信局域网内的 iPhone 传送文字、图片和文件的本机工具。Windows 上运行 HTTP 服务，iPhone 使用 Safari 配对并访问。数据保存在运行程序的 Windows 电脑上；本产品不提供云端存储、账号服务或公网中继。
 
 ## 二、安装与启动
 
@@ -30,10 +30,10 @@ py -3.11 -m venv .venv
 
 服务默认使用 `9527` 端口，并尝试打开 Windows 本机页面。iPhone 应使用启动页面提供的同一 Wi-Fi 局域网地址和配对二维码。
 
-如果 iPhone 无法打开配对页，请先确认两台设备连接到同一 Wi-Fi 或可信 VPN。Windows 配对卡会显示当前局域网地址来源；检查 Windows 防火墙允许专用网络访问，并避免使用可能隔离设备的 Guest Wi-Fi。若自动选择的网卡地址不可达，可在启动前设置 `PRIVATE_SEND_LAN_IP` 为 Windows 在该 Wi-Fi 上的 IPv4 地址，例如：
+如果 iPhone 无法打开配对页，请先确认两台设备连接到同一 Wi-Fi 或可信 VPN。Windows 配对卡会显示当前局域网地址来源；检查 Windows 防火墙允许专用网络访问，并避免使用可能隔离设备的 Guest Wi-Fi。若自动选择的网卡地址不可达，可在启动前设置 `LANTERN_LINK_LAN_IP` 为 Windows 在该 Wi-Fi 上的 IPv4 地址，例如：
 
 ```powershell
-$env:PRIVATE_SEND_LAN_IP = "<WIFI_IPV4>"
+$env:LANTERN_LINK_LAN_IP = "<WIFI_IPV4>"
 ```
 
 将 `<WIFI_IPV4>` 替换为 Windows Wi-Fi 网卡的 IPv4 地址后，在同一 PowerShell 窗口启动应用。只填写本机可信局域网地址；不要把服务暴露到公网。
@@ -65,11 +65,11 @@ $env:PRIVATE_SEND_LAN_IP = "<WIFI_IPV4>"
 
 消息历史和附件元数据保存在本机 SQLite 数据库中，图片和文件的二进制内容保存在文件系统，不写入数据库。设备栏的 History 会打开按日期或文件分组的附件历史，可按类型、文件格式和文件名筛选，并可继续加载更早的结果。历史记录与附件是否仍在磁盘上分别管理：如果用户在程序外移除了已登记附件，记录仍会保留并标记为 `MISSING`；访问该附件会返回不可用响应。
 
-上传成功的图片和文件归档在 Windows 已知的 Downloads 文件夹下的 `file_private_send/YYYY-MM-DD/`，文件名尽量保留原名，冲突时添加编号。上传会先登记可恢复的待归档状态，再发布完整副本；若中断，下一次启动会继续该已登记操作。程序不会自动清理已归档的 Downloads 文件。未完成上传使用单独的暂存目录；启动时只清理超过 24 小时的普通 `.partial` 暂存文件。
+上传成功的图片和文件归档在 Windows 已知的 Downloads 文件夹下的 `lantern_link/YYYY-MM-DD/`，文件名尽量保留原名，冲突时添加编号。上传会先登记可恢复的待归档状态，再发布完整副本；若中断，下一次启动会继续该已登记操作。程序不会自动清理已归档的 Downloads 文件。未完成上传使用单独的暂存目录；启动时只清理超过 24 小时的普通 `.partial` 暂存文件。
 
-私有运行数据使用 `%LOCALAPPDATA%/private_send/`：数据库为 `private_send.db`，上传暂存区为 `staging/`。应用默认把日志输出交给 Python 进程日志配置，不单独创建或轮转日志文件；若部署时启用持久文件日志，应放在该私有目录下的 `logs/`。路径使用环境变量形式展示，不包含本机账户名。
+私有运行数据使用 `%LOCALAPPDATA%/lantern_link/`：数据库为 `lantern_link.db`，上传暂存区为 `staging/`。应用默认把日志输出交给 Python 进程日志配置，不单独创建或轮转日志文件；若部署时启用持久文件日志，应放在该私有目录下的 `logs/`。路径使用环境变量形式展示，不包含本机账户名。
 
-首次启动新版本时，只有检测到项目目录 `data/` 中的旧数据库时，程序才会把缺少的内容安全复制到新位置，再初始化运行数据。空目录不会触发迁移。迁移使用可恢复的 started/completed 标记；数据库和附件迁移均保留原项目 `data/` 源文件，仅由本次迁移创建的临时兼容附件副本会在正式归档成功后自动清理。首次升级前仍建议自行备份数据库和附件。
+首次启动 Lantern Link 时，程序会检测旧 `private_send` 运行目录和旧 Downloads 归档，并把缺少的数据库、运行数据与已归档文件安全复制到新位置；旧目录和文件不会删除或改写。空目录不会触发迁移。迁移使用可恢复的 started/completed 标记；仅由本次迁移创建的临时兼容附件副本会在正式归档成功后自动清理。配对凭证只在运行期间有效，升级后需重新配对。首次升级前仍建议自行备份数据库和附件。
 
 ## 五、版本与范围
 

@@ -1,1 +1,1 @@
-"""Persistence repositories for private_send."""
+"""Persistence repositories for Lantern Link."""

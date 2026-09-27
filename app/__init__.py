@@ -1,1 +1,1 @@
-"""private_send application package."""
+"""Lantern Link application package."""

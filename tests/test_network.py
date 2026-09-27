@@ -91,7 +91,7 @@ def test_local_ipv4_candidates_filter_and_deduplicate_resolver_results(monkeypat
 
 
 def test_route_selected_ip_precedes_hostname_candidates(monkeypatch):
-    monkeypatch.delenv("PRIVATE_SEND_LAN_IP", raising=False)
+    monkeypatch.delenv("LANTERN_LINK_LAN_IP", raising=False)
     monkeypatch.setattr(network, "get_local_ipv4_candidates", lambda: ["192.168.56.1"])
     monkeypatch.setattr(network, "get_route_ipv4", lambda: "10.0.0.24")
 
@@ -105,7 +105,7 @@ def test_route_selected_ip_precedes_hostname_candidates(monkeypatch):
 
 
 def test_hostname_candidate_is_fallback_when_route_is_unavailable(monkeypatch):
-    monkeypatch.delenv("PRIVATE_SEND_LAN_IP", raising=False)
+    monkeypatch.delenv("LANTERN_LINK_LAN_IP", raising=False)
     monkeypatch.setattr(network, "get_local_ipv4_candidates", lambda: ["192.168.1.9"])
     monkeypatch.setattr(network, "get_route_ipv4", lambda: None)
 
@@ -117,7 +117,7 @@ def test_hostname_candidate_is_fallback_when_route_is_unavailable(monkeypatch):
 
 
 def test_loopback_is_used_only_when_no_lan_candidate_exists(monkeypatch):
-    monkeypatch.delenv("PRIVATE_SEND_LAN_IP", raising=False)
+    monkeypatch.delenv("LANTERN_LINK_LAN_IP", raising=False)
     monkeypatch.setattr(network, "get_local_ipv4_candidates", lambda: [])
     monkeypatch.setattr(network, "get_route_ipv4", lambda: None)
 
@@ -129,7 +129,7 @@ def test_loopback_is_used_only_when_no_lan_candidate_exists(monkeypatch):
 
 
 def test_valid_override_has_highest_priority(monkeypatch):
-    monkeypatch.setenv("PRIVATE_SEND_LAN_IP", " 192.168.10.8 ")
+    monkeypatch.setenv("LANTERN_LINK_LAN_IP", " 192.168.10.8 ")
     monkeypatch.setattr(network, "get_local_ipv4_candidates", lambda: ["192.168.1.9"])
     monkeypatch.setattr(
         network,
@@ -153,7 +153,7 @@ def test_valid_override_has_highest_priority(monkeypatch):
     ["8.8.8.8", "127.0.0.1", "169.254.1.3", "198.18.0.1", "2001:db8::1", "invalid", ""],
 )
 def test_invalid_override_is_rejected_instead_of_silently_ignored(monkeypatch, override):
-    monkeypatch.setenv("PRIVATE_SEND_LAN_IP", override)
+    monkeypatch.setenv("LANTERN_LINK_LAN_IP", override)
     monkeypatch.setattr(network, "get_local_ipv4_candidates", lambda: [])
     monkeypatch.setattr(
         network,
@@ -161,7 +161,7 @@ def test_invalid_override_is_rejected_instead_of_silently_ignored(monkeypatch, o
         lambda: pytest.fail("invalid explicit configuration must be reported"),
     )
 
-    with pytest.raises(ValueError, match="PRIVATE_SEND_LAN_IP"):
+    with pytest.raises(ValueError, match="LANTERN_LINK_LAN_IP"):
         get_lan_network_info()
 
 

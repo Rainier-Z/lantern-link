@@ -26,7 +26,7 @@ def test_canonical_upload_classifies_by_supported_filename_extension(
 ) -> None:
     app = create_app(
         data_dir=tmp_path / "app-data",
-        user_files_dir=tmp_path / "Downloads" / "file_private_send",
+        user_files_dir=tmp_path / "Downloads" / "lantern_link",
         legacy_data_dir=tmp_path / "legacy",
     )
     with TestClient(app) as client:
@@ -42,7 +42,7 @@ def test_canonical_upload_classifies_by_supported_filename_extension(
     assert body["asset"]["kind"] == expected_kind
     assert body["archive"] == {
         "date": body["asset"]["relative_path"].split("/", 1)[0],
-        "display_dir": "Windows Downloads\\file_private_send\\"
+        "display_dir": "Windows Downloads\\lantern_link\\"
         + body["asset"]["relative_path"].split("/", 1)[0],
     }
     assert "C:\\" not in response.text

@@ -1,4 +1,4 @@
-"""Shared fixtures for the private_send HTTP API tests."""
+"""Shared fixtures for the Lantern Link HTTP API tests."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def application(app_module: Any, tmp_path) -> FastAPI:
         pytest.fail("app.main must expose create_app")
     return factory(
         data_dir=tmp_path / "app-data",
-        user_files_dir=tmp_path / "Downloads" / "file_private_send",
+        user_files_dir=tmp_path / "Downloads" / "lantern_link",
         legacy_data_dir=tmp_path / "legacy",
     )
 

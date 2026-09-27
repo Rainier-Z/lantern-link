@@ -20,11 +20,14 @@ from app.api.assets import router as assets_router
 from app.core.config import (
     HOST,
     LEGACY_DATABASE_NAME,
+    LEGACY_PRIVATE_SEND_DATABASE_NAME,
     PROJECT_ROOT,
     PORT,
     WEB_DIR,
     resolve_app_data_dir,
     resolve_database_path,
+    resolve_legacy_app_data_dir,
+    resolve_legacy_user_files_dir,
     resolve_user_files_dir,
 )
 from app.core.database import initialize_database
@@ -68,7 +71,7 @@ def configure_cache_policy(application: FastAPI) -> None:
 def health() -> dict[str, str]:
     """Return a lightweight service liveness response."""
 
-    return {"status": "ok", "service": "private_send"}
+    return {"status": "ok", "service": "lantern_link"}
 
 
 def version() -> dict[str, str]:
@@ -154,13 +157,14 @@ def root(request: Request, token: str | None = None):
     index_path = WEB_DIR / "index.html"
     if index_path.is_file():
         return Response(content=index_path.read_bytes(), media_type="text/html")
-    return {"service": "private_send", "status": "online"}
+    return {"service": "lantern_link", "status": "online"}
 
 
 def bootstrap_app(
     app_data_dir: str | Path | None = None,
     user_files_dir: str | Path | None = None,
     legacy_data_dir: str | Path | None = None,
+    legacy_user_files_dir: str | Path | None = None,
 ) -> tuple[Path, Path, AssetService, MessageService]:
     """Select paths, safely copy legacy data, initialize storage, and recover."""
 
@@ -172,10 +176,28 @@ def bootstrap_app(
         if user_files_dir is not None
         else resolve_user_files_dir() if app_data_dir is None else app_data_path
     )
-    source_path = (
-        Path(legacy_data_dir)
-        if legacy_data_dir is not None
-        else PROJECT_ROOT / "data" if app_data_dir is None else app_data_path
+    if legacy_data_dir is not None:
+        source_path = Path(legacy_data_dir)
+    elif app_data_dir is None:
+        old_app_data_path = resolve_legacy_app_data_dir()
+        project_data_path = PROJECT_ROOT / "data"
+        old_database_names = {
+            LEGACY_PRIVATE_SEND_DATABASE_NAME,
+            LEGACY_DATABASE_NAME,
+        }
+        source_path = (
+            old_app_data_path
+            if any((old_app_data_path / name).is_file() for name in old_database_names)
+            else project_data_path
+        )
+    else:
+        source_path = app_data_path
+    old_files_path = (
+        Path(legacy_user_files_dir)
+        if legacy_user_files_dir is not None
+        else resolve_legacy_user_files_dir()
+        if legacy_data_dir is None and app_data_dir is None and user_files_dir is None
+        else None
     )
     database_path = resolve_database_path(app_data_path)
 
@@ -184,7 +206,7 @@ def bootstrap_app(
     migration_directory = app_data_path / LEGACY_MIGRATION_DIRECTORY
     started_marker = migration_directory / LEGACY_MIGRATION_STARTED
     completed_marker = migration_directory / LEGACY_MIGRATION_COMPLETED
-    legacy_private_database = source_path / "private_send.db"
+    legacy_private_database = source_path / LEGACY_PRIVATE_SEND_DATABASE_NAME
     legacy_rainier_database = source_path / LEGACY_DATABASE_NAME
     source_is_external = source_path.resolve() != app_data_path.resolve()
     has_legacy_database = source_is_external and (
@@ -196,7 +218,7 @@ def bootstrap_app(
 
     if migration_active and database_path.exists() and not migration_started:
         LOGGER.warning(
-            "Current private_send.db exists with an unstarted legacy source; "
+            "Current Lantern Link database exists with an unstarted legacy source; "
             "retaining the current database without merging legacy data"
         )
         migration_directory.mkdir(parents=True, exist_ok=True)
@@ -210,7 +232,7 @@ def bootstrap_app(
         _copy_missing_tree(
             source_path,
             app_data_path,
-            ignored_names={"private_send.db", LEGACY_DATABASE_NAME, "assets"},
+            ignored_names={LEGACY_PRIVATE_SEND_DATABASE_NAME, LEGACY_DATABASE_NAME, "assets"},
         )
         source_database = legacy_private_database
         if not source_database.is_file():
@@ -232,6 +254,12 @@ def bootstrap_app(
                 app_data_path.mkdir(parents=True, exist_ok=True)
                 cleanup_marker.touch(exist_ok=True)
             _copy_missing_tree(legacy_assets, target_assets)
+        if (
+            old_files_path is not None
+            and old_files_path.is_dir()
+            and old_files_path.resolve() != files_path.resolve()
+        ):
+            _copy_missing_tree(old_files_path, files_path)
 
     target_assets = files_path / "assets"
     protected_project_assets = (PROJECT_ROOT / "data" / "assets").resolve()
@@ -308,7 +336,7 @@ def _copy_database_if_absent(source: Path, destination: Path) -> bool:
     if destination.exists():
         return False
     with tempfile.NamedTemporaryFile(
-        prefix="private_send_migration_", suffix=".tmp", dir=destination.parent,
+        prefix="lantern_link_migration_", suffix=".tmp", dir=destination.parent,
         delete=False,
     ) as temporary:
         temporary_path = Path(temporary.name)
@@ -348,7 +376,7 @@ def create_app(
         yield
 
     application = FastAPI(
-        title="private_send", version=APP_VERSION, lifespan=lifespan
+        title="Lantern Link", version=APP_VERSION, lifespan=lifespan
     )
     application.state.token = get_access_token()
     application.include_router(messages_router)
@@ -403,7 +431,7 @@ def start_server() -> None:
     network = get_lan_network_info(PORT)
     local_url = build_service_url("127.0.0.1", PORT, get_access_token())
     lan_url = build_service_url(network.selected_ip, network.port)
-    LOGGER.info("private_send %s", APP_VERSION)
+    LOGGER.info("Lantern Link %s", APP_VERSION)
     LOGGER.info("Local: %s", build_service_url("127.0.0.1", PORT))
     LOGGER.info("LAN: %s", lan_url)
     pairing_availability = "unavailable" if network.loopback_only else "available"

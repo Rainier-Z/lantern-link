@@ -26,5 +26,5 @@ def test_importing_main_creates_no_appdata_or_downloads(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert not (local_app_data / "private_send").exists()
-    assert not (user_profile / "Downloads" / "file_private_send").exists()
+    assert not (local_app_data / "lantern_link").exists()
+    assert not (user_profile / "Downloads" / "lantern_link").exists()

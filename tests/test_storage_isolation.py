@@ -11,7 +11,7 @@ from pathlib import Path
 def test_subprocess_bootstrap_uses_only_explicit_test_paths(tmp_path: Path) -> None:
     paths = {
         "TEST_APP_DATA": tmp_path / "app-data",
-        "TEST_USER_FILES": tmp_path / "Downloads" / "file_private_send",
+        "TEST_USER_FILES": tmp_path / "Downloads" / "lantern_link",
         "TEST_LEGACY_DATA": tmp_path / "legacy",
     }
     environment = os.environ | {key: str(value) for key, value in paths.items()}
@@ -40,5 +40,5 @@ def test_subprocess_bootstrap_uses_only_explicit_test_paths(tmp_path: Path) -> N
     )
 
     assert result.returncode == 0, result.stderr
-    assert (paths["TEST_APP_DATA"] / "private_send.db").is_file()
+    assert (paths["TEST_APP_DATA"] / "lantern_link.db").is_file()
     assert paths["TEST_USER_FILES"].is_dir()

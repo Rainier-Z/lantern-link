@@ -33,7 +33,7 @@ def _upload_response(message, asset: Asset) -> dict[str, object]:
         "asset": asset,
         "archive": {
             "date": archive_date,
-            "display_dir": f"Windows Downloads\\file_private_send\\{archive_date}",
+            "display_dir": f"Windows Downloads\\lantern_link\\{archive_date}",
         },
     }
 

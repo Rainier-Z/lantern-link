@@ -248,7 +248,7 @@ class AssetService:
             raise RuntimeError("Archive date directory escapes the user-files root")
         operation = f"{asset_id}\n{relative_path}"
         key = hashlib.sha256(operation.encode("utf-8")).hexdigest()
-        return destination.parent / f".private_send_{key}.partial"
+        return destination.parent / f".lantern_link_{key}.partial"
 
     @staticmethod
     def _remove_archive_temporary(path: Path) -> None:

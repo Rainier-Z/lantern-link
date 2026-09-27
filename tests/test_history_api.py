@@ -11,7 +11,7 @@ from app.main import create_app
 
 
 def _client_for(tmp_path: Path) -> tuple[TestClient, dict[str, str], Path]:
-    user_files_dir = tmp_path / "Downloads" / "file_private_send"
+    user_files_dir = tmp_path / "Downloads" / "lantern_link"
     app = create_app(data_dir=tmp_path, user_files_dir=user_files_dir)
     client = TestClient(app)
     client.__enter__()
@@ -86,7 +86,7 @@ def test_history_filters_sorts_and_returns_only_relative_urls(
         "2026-01-02T00:00:00+00:00",
         "2026-01-03T00:00:00+00:00",
     )
-    with get_connection(tmp_path / "private_send.db") as connection:
+    with get_connection(tmp_path / "lantern_link.db") as connection:
         for result, timestamp in zip(uploaded, timestamps):
             message_id = result["message"]["id"]
             asset_id = result["asset"]["id"]
@@ -186,7 +186,7 @@ def test_history_marks_manually_removed_archive_as_missing_and_keeps_message(
     assert item["availability"] == "MISSING"
     assert item["asset_url"] is None
     assert item["download_url"] is None
-    with get_connection(tmp_path / "private_send.db") as connection:
+    with get_connection(tmp_path / "lantern_link.db") as connection:
         status = connection.execute(
             "SELECT status FROM assets WHERE id = ?", (asset_id,)
         ).fetchone()[0]
@@ -208,7 +208,7 @@ def test_history_normalizes_archive_pending_to_pending_availability(
         kind="file",
     )
     asset_id = created["asset"]["id"]
-    with get_connection(tmp_path / "private_send.db") as connection:
+    with get_connection(tmp_path / "lantern_link.db") as connection:
         connection.execute(
             "UPDATE assets SET status = 'ARCHIVE_PENDING' WHERE id = ?",
             (asset_id,),

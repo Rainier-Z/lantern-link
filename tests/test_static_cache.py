@@ -57,7 +57,7 @@ def test_static_shell_uses_composer_batch_contract_without_storage_ui() -> None:
     assert "uploadRunning: false" in script
     assert "clientEntrySeq: 0" in script
     assert "crypto.randomUUID" not in script
-    assert "private_send" in script
+    assert "Lantern Link" in script
     assert "Rainier" + " Link" not in html
     assert "rainier" + "-link-" not in script
     assert "return `${Date.now()}-${state.clientEntrySeq}`" in script
@@ -67,7 +67,7 @@ def test_static_shell_uses_composer_batch_contract_without_storage_ui() -> None:
     assert 'feedback("Wait for the current upload to finish before selecting files.", true)' in script
     assert "el.message_input.disabled = uploading || state.textSending" in script
     assert 'retry.disabled = state.uploadRunning' in script
-    assert script.count('asset.original_filename || "private_send"') == 2
+    assert script.count('asset.original_filename || "lantern_link"') == 2
     assert all(
         f"function {name}(" in script
         for name in (

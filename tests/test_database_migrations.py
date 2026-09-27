@@ -103,7 +103,7 @@ def _create_v02_database(database_path: Path, data_dir: Path) -> bytes:
 
 
 def test_v02_database_migrates_idempotently_and_remains_usable(tmp_path: Path) -> None:
-    database_path = tmp_path / "private_send.db"
+    database_path = tmp_path / "lantern_link.db"
     old_payload = _create_v02_database(database_path, tmp_path)
 
     initialize_database(database_path)
@@ -190,8 +190,8 @@ def test_bootstrap_copies_legacy_project_data_and_retains_source(
     tmp_path: Path,
 ) -> None:
     legacy_dir = tmp_path / "legacy-project-data"
-    app_data_dir = tmp_path / "LocalAppData" / "private_send"
-    user_files_dir = tmp_path / "Downloads" / "file_private_send"
+    app_data_dir = tmp_path / "LocalAppData" / "lantern_link"
+    user_files_dir = tmp_path / "Downloads" / "lantern_link"
     legacy_database = legacy_dir / "private_send.db"
     _create_v02_database(legacy_database, legacy_dir)
     source_bytes = legacy_database.read_bytes()
@@ -205,7 +205,7 @@ def test_bootstrap_copies_legacy_project_data_and_retains_source(
         legacy_data_dir=legacy_dir,
     )
 
-    assert database_path == app_data_dir / "private_send.db"
+    assert database_path == app_data_dir / "lantern_link.db"
     assert database_path.read_bytes() != source_bytes
     assert source_bytes == legacy_database.read_bytes()
     assert source_asset.read_bytes() == b"legacy image bytes"
@@ -245,7 +245,7 @@ def test_fresh_install_ignores_empty_legacy_directory(tmp_path: Path) -> None:
     assert service.repository.list_available() == []
     assert not (user_files_dir / "assets").exists()
     assert not (tmp_path / "app-data" / "migration").exists()
-    assert (tmp_path / "app-data" / "private_send.db").is_file()
+    assert (tmp_path / "app-data" / "lantern_link.db").is_file()
 
 
 def test_bootstrap_cleans_only_its_migrated_legacy_asset_copy(tmp_path: Path) -> None:
@@ -457,7 +457,7 @@ def test_app_data_database_takes_priority_over_legacy_project_data(
 ) -> None:
     app_data_dir = tmp_path / "app-data"
     legacy_dir = tmp_path / "legacy"
-    database_path = app_data_dir / "private_send.db"
+    database_path = app_data_dir / "lantern_link.db"
     legacy_database = legacy_dir / "private_send.db"
     initialize_database(database_path)
     with get_connection(database_path) as connection:
@@ -487,7 +487,7 @@ def test_completed_migration_marker_skips_legacy_asset_import(tmp_path: Path) ->
     app_data_dir = tmp_path / "app-data"
     user_files_dir = tmp_path / "user-files"
     legacy_dir = tmp_path / "legacy"
-    database_path = app_data_dir / "private_send.db"
+    database_path = app_data_dir / "lantern_link.db"
     legacy_path = user_files_dir / "assets" / "2026" / "01" / "02" / "old.jpg"
     legacy_path.parent.mkdir(parents=True)
     legacy_path.write_bytes(b"old asset")
@@ -541,7 +541,7 @@ def test_repository_construction_does_not_migrate_schema(tmp_path: Path) -> None
     with TestClient(application):
         pass
 
-    migrated_database_path = tmp_path / "app-data" / "private_send.db"
+    migrated_database_path = tmp_path / "app-data" / "lantern_link.db"
     with get_connection(migrated_database_path) as connection:
         schema = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
@@ -556,7 +556,7 @@ def test_create_app_migrates_legacy_database_name_and_keeps_history(
     legacy_dir = tmp_path / "legacy"
     legacy_database = legacy_dir / "rainier.db"
     app_data_dir = tmp_path / "app-data"
-    private_database = app_data_dir / "private_send.db"
+    private_database = app_data_dir / "lantern_link.db"
     _create_v02_database(legacy_database, legacy_dir)
 
     from app.main import create_app
@@ -576,7 +576,7 @@ def test_create_app_migrates_legacy_database_name_and_keeps_history(
 
 
 def test_create_app_uses_existing_private_database(tmp_path: Path) -> None:
-    private_database = tmp_path / "private_send.db"
+    private_database = tmp_path / "lantern_link.db"
     initialize_database(private_database)
 
     from app.main import create_app
@@ -598,7 +598,7 @@ def test_create_app_prefers_private_database_and_retains_legacy_file(
 ) -> None:
     app_data_dir = tmp_path / "app-data"
     legacy_dir = tmp_path / "legacy"
-    private_database = app_data_dir / "private_send.db"
+    private_database = app_data_dir / "lantern_link.db"
     legacy_database = legacy_dir / "rainier.db"
     initialize_database(private_database)
     _create_v02_database(legacy_database, legacy_dir)
@@ -630,8 +630,8 @@ def test_create_app_prefers_private_database_and_retains_legacy_file(
 
 def test_windows_storage_roots_can_be_injected(tmp_path: Path) -> None:
     assert resolve_app_data_dir(tmp_path / "LocalAppData") == (
-        tmp_path / "LocalAppData" / "private_send"
+        tmp_path / "LocalAppData" / "lantern_link"
     )
     assert resolve_user_files_dir(tmp_path / "Profile") == (
-        tmp_path / "Profile" / "Downloads" / "file_private_send"
+        tmp_path / "Profile" / "Downloads" / "lantern_link"
     )

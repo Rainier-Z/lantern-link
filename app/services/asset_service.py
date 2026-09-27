@@ -108,6 +108,12 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _is_windows() -> bool:
+    """Return whether the current runtime uses Windows filesystem semantics."""
+
+    return os.name == "nt"
+
+
 def _host_local_timezone():
     """Resolve the host-local timezone at use time for archive folders."""
 
@@ -198,7 +204,7 @@ class AssetService:
     def _sync_directory(directory: Path) -> bool:
         # Windows 不支持通过 Python 的目录 fd 做 fsync；仍同步文件内容，
         # 并把 staging 保留到 AVAILABLE 提交。此回退不承诺突然断电时目录项持久化。
-        if os.name == "nt":
+        if _is_windows():
             return False
         descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
         try:
@@ -289,14 +295,14 @@ class AssetService:
         """Publish a complete temporary copy without replacing user files."""
 
         try:
-            if os.name == "nt":
+            if _is_windows():
                 os.rename(temporary_path, destination)
             else:
                 os.link(temporary_path, destination)
         except FileExistsError:
             return
         except OSError:
-            if os.name != "nt":
+            if not _is_windows():
                 raise
             destination_created = False
             try:
@@ -453,6 +459,7 @@ class AssetService:
             self.resolve_asset_path(asset) if legacy
             else self.staging_dir / f"{asset.id}.partial"
         )
+        # Legacy v0.x has no committed-date field; v1.0 recovery uses relative_path.
         target_relative_path = (
             (Path(archive_date_for(asset.created_at)) / asset.stored_filename).as_posix()
             if legacy

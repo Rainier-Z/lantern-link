@@ -154,7 +154,7 @@ def test_pending_archive_keeps_its_committed_target_when_timezone_changes(
 
 def test_windows_archive_publish_does_not_require_hard_links(tmp_path, monkeypatch):
     service = service_for(tmp_path)
-    monkeypatch.setattr(asset_service.os, "name", "nt")
+    monkeypatch.setattr(asset_service, "_is_windows", lambda: True)
     monkeypatch.setattr(
         asset_service.os, "link", lambda *args, **kwargs: (_ for _ in ()).throw(OSError())
     )
@@ -278,16 +278,34 @@ def test_delete_message_and_recover_delete_pending_keep_formal_files(tmp_path):
 
 def test_fresh_environment_import_and_bootstrap_initialize_before_recovery(tmp_path):
     environment = dict(os.environ)
-    environment["LOCALAPPDATA"] = str(tmp_path / "local-app")
-    environment["USERPROFILE"] = str(tmp_path / "profile")
+    app_data = tmp_path / "app-data"
+    user_files = tmp_path / "user-files"
+    legacy_data = tmp_path / "legacy-data"
+    environment["TEST_APP_DATA"] = str(app_data)
+    environment["TEST_USER_FILES"] = str(user_files)
+    environment["TEST_LEGACY_DATA"] = str(legacy_data)
+    environment.pop("LOCALAPPDATA", None)
+    environment.pop("USERPROFILE", None)
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     result = subprocess.run(
         [sys.executable, "-B", "-c",
+             "import os; "
+             "from pathlib import Path; "
              "from app.main import create_app; "
              "from fastapi.testclient import TestClient; "
-             "app = create_app(); "
+             "root = Path(os.environ['TEST_APP_DATA']).parent.resolve(); "
+             "app = create_app(data_dir=os.environ['TEST_APP_DATA'], "
+             "user_files_dir=os.environ['TEST_USER_FILES'], "
+             "legacy_data_dir=os.environ['TEST_LEGACY_DATA']); "
              "client = TestClient(app); "
              "client.__enter__(); "
+             "service = app.state.asset_service; "
+             "assert root in service.database_path.resolve().parents; "
+             "assert service.database_path.resolve() == "
+             "(Path(os.environ['TEST_APP_DATA']) / 'private_send.db').resolve(); "
+             "assert service.user_files_dir.resolve() == "
+             "Path(os.environ['TEST_USER_FILES']).resolve(); "
+             "assert root in service.user_files_dir.resolve().parents; "
              "assert app.state.asset_service.repository.list_archive_pending() == []; "
              "client.__exit__(None, None, None)"],
         env=environment, capture_output=True, text=True, timeout=30,
@@ -341,15 +359,18 @@ asyncio.run(service.persist_upload(
     temporary = service._archive_temporary_path(
         pending.id, pending.created_at, pending.stored_filename
     )
-    assert temporary.is_file() == (crash_point != "after_publish")
+    formal = service.user_files_dir / pending.relative_path
+    if crash_point == "after_publish":
+        assert formal.exists()
+        assert formal.read_bytes() == b"complete upload"
     if temporary.exists():
         assert temporary.read_bytes() == (
             b"com" if crash_point == "during_copy" else b"complete upload"
         )
     source = service.staging_dir / f"{pending.id}.partial"
     assert source.read_bytes() == b"complete upload"
-    formal = service.user_files_dir / pending.relative_path
-    assert formal.exists() == (crash_point == "after_publish")
+    if crash_point != "after_publish":
+        assert not formal.exists()
     unrelated = temporary.parent / ".private_send_unrelated.partial"
     unrelated.write_bytes(b"user file")
 
@@ -417,13 +438,14 @@ def test_legacy_delete_failure_remains_pending_and_startup_retries(tmp_path, mon
 
 def test_directory_sync_fallback_keeps_staging_until_available_commit(tmp_path, monkeypatch):
     service = service_for(tmp_path)
-    if os.name == "nt":
-        with monkeypatch.context() as context:
-            def unexpected_directory_open(*args, **kwargs):
-                raise AssertionError("Windows fallback must not open a directory fd")
+    with monkeypatch.context() as context:
+        context.setattr(asset_service, "_is_windows", lambda: True)
 
-            context.setattr(os, "open", unexpected_directory_open)
-            assert service._sync_directory(service.staging_dir) is False
+        def unexpected_directory_open(*args, **kwargs):
+            raise AssertionError("Windows fallback must not open a directory fd")
+
+        context.setattr(os, "open", unexpected_directory_open)
+        assert service._sync_directory(service.staging_dir) is False
 
     monkeypatch.setattr(service, "_sync_directory", lambda directory: False)
     original_update = service.repository.update_storage_location

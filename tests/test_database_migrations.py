@@ -12,7 +12,6 @@ from fastapi.testclient import TestClient
 
 from app.core.config import (
     resolve_app_data_dir,
-    resolve_database_path,
     resolve_user_files_dir,
 )
 from app.core.database import (
@@ -104,7 +103,7 @@ def _create_v02_database(database_path: Path, data_dir: Path) -> bytes:
 
 
 def test_v02_database_migrates_idempotently_and_remains_usable(tmp_path: Path) -> None:
-    database_path = tmp_path / "rainier.db"
+    database_path = tmp_path / "private_send.db"
     old_payload = _create_v02_database(database_path, tmp_path)
 
     initialize_database(database_path)
@@ -213,8 +212,40 @@ def test_bootstrap_copies_legacy_project_data_and_retains_source(
     assert (user_files_dir / "assets" / "legacy-image.jpg").read_bytes() == source_asset.read_bytes()
     assert asset_service.staging_dir == app_data_dir / "staging"
     assert asset_service.assets_dir == user_files_dir / "assets"
+    assert (app_data_dir / "migration" / "legacy_v1_started").is_file()
+    assert (app_data_dir / "migration" / "legacy_v1_completed").is_file()
+
+    bootstrap_app(
+        app_data_dir=app_data_dir,
+        user_files_dir=user_files_dir,
+        legacy_data_dir=legacy_dir,
+    )
+    with get_connection(database_path) as connection:
+        assert [row["id"] for row in connection.execute("SELECT id FROM messages ORDER BY id")] == [
+            "legacy-image-message",
+            "legacy-text",
+        ]
     with get_connection(database_path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_fresh_install_ignores_empty_legacy_directory(tmp_path: Path) -> None:
+    legacy_dir = tmp_path / "legacy-project-data"
+    (legacy_dir / "assets").mkdir(parents=True)
+    (legacy_dir / "assets" / ".gitkeep").write_text("\n", encoding="utf-8")
+
+    from app.main import bootstrap_app
+
+    _, user_files_dir, service, _ = bootstrap_app(
+        app_data_dir=tmp_path / "app-data",
+        user_files_dir=tmp_path / "user-files",
+        legacy_data_dir=legacy_dir,
+    )
+
+    assert service.repository.list_available() == []
+    assert not (user_files_dir / "assets").exists()
+    assert not (tmp_path / "app-data" / "migration").exists()
+    assert (tmp_path / "app-data" / "private_send.db").is_file()
 
 
 def test_bootstrap_cleans_only_its_migrated_legacy_asset_copy(tmp_path: Path) -> None:
@@ -347,17 +378,56 @@ def test_app_data_database_takes_priority_over_legacy_project_data(
     with get_connection(database_path) as connection:
         assert [row[0] for row in connection.execute("SELECT id FROM messages")] == ["current"]
     assert legacy_database.read_bytes() == legacy_bytes
+    assert not (app_data_dir / "migration" / "legacy_v1_started").exists()
+    assert (app_data_dir / "migration" / "legacy_v1_completed").is_file()
+
+
+def test_completed_migration_marker_skips_legacy_asset_import(tmp_path: Path) -> None:
+    app_data_dir = tmp_path / "app-data"
+    user_files_dir = tmp_path / "user-files"
+    legacy_dir = tmp_path / "legacy"
+    database_path = app_data_dir / "private_send.db"
+    legacy_path = user_files_dir / "assets" / "2026" / "01" / "02" / "old.jpg"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_bytes(b"old asset")
+    initialize_database(database_path)
+    with get_connection(database_path) as connection:
+        connection.execute(
+            "INSERT INTO assets (id, kind, original_filename, stored_filename, extension, "
+            "mime_type, size, sha256, relative_path, status, created_at) "
+            "VALUES ('old', 'image', 'old.jpg', 'old.jpg', '.jpg', 'image/jpeg', "
+            "9, 'unused', 'assets/2026/01/02/old.jpg', 'AVAILABLE', "
+            "'2026-01-02T00:00:00+00:00')"
+        )
+    initialize_database(legacy_dir / "rainier.db")
+    marker = app_data_dir / "migration" / "legacy_v1_completed"
+    marker.parent.mkdir(parents=True)
+    marker.touch()
+
+    from app.main import bootstrap_app
+
+    _, _, service, _ = bootstrap_app(
+        app_data_dir=app_data_dir,
+        user_files_dir=user_files_dir,
+        legacy_data_dir=legacy_dir,
+    )
+
+    asset = service.repository.get("old")
+    assert asset is not None
+    assert asset.status == "AVAILABLE"
+    assert asset.relative_path == "assets/2026/01/02/old.jpg"
 
 
 def test_repository_construction_does_not_migrate_schema(tmp_path: Path) -> None:
-    database_path = tmp_path / "rainier.db"
-    _create_v02_database(database_path, tmp_path)
+    legacy_dir = tmp_path / "legacy"
+    legacy_database = legacy_dir / "rainier.db"
+    _create_v02_database(legacy_database, legacy_dir)
 
-    AssetRepository(database_path)
-    MessageRepository(database_path)
-    AssetService(database_path)
+    AssetRepository(legacy_database)
+    MessageRepository(legacy_database)
+    AssetService(legacy_database)
 
-    with get_connection(database_path) as connection:
+    with get_connection(legacy_database) as connection:
         schema = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
         ).fetchone()[0]
@@ -366,11 +436,11 @@ def test_repository_construction_does_not_migrate_schema(tmp_path: Path) -> None
 
     from app.main import create_app
 
-    application = create_app(data_dir=tmp_path)
+    application = create_app(data_dir=tmp_path / "app-data", legacy_data_dir=legacy_dir)
     with TestClient(application):
         pass
 
-    migrated_database_path = tmp_path / "private_send.db"
+    migrated_database_path = tmp_path / "app-data" / "private_send.db"
     with get_connection(migrated_database_path) as connection:
         schema = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
@@ -382,13 +452,15 @@ def test_repository_construction_does_not_migrate_schema(tmp_path: Path) -> None
 def test_create_app_migrates_legacy_database_name_and_keeps_history(
     tmp_path: Path,
 ) -> None:
-    legacy_database = tmp_path / "rainier.db"
-    private_database = tmp_path / "private_send.db"
-    _create_v02_database(legacy_database, tmp_path)
+    legacy_dir = tmp_path / "legacy"
+    legacy_database = legacy_dir / "rainier.db"
+    app_data_dir = tmp_path / "app-data"
+    private_database = app_data_dir / "private_send.db"
+    _create_v02_database(legacy_database, legacy_dir)
 
     from app.main import create_app
 
-    application = create_app(data_dir=tmp_path)
+    application = create_app(data_dir=app_data_dir, legacy_data_dir=legacy_dir)
     with TestClient(application) as client:
         assert private_database.is_file()
         assert legacy_database.exists()
@@ -423,16 +495,18 @@ def test_create_app_uses_existing_private_database(tmp_path: Path) -> None:
 def test_create_app_prefers_private_database_and_retains_legacy_file(
     tmp_path: Path, caplog,
 ) -> None:
-    private_database = tmp_path / "private_send.db"
-    legacy_database = tmp_path / "rainier.db"
+    app_data_dir = tmp_path / "app-data"
+    legacy_dir = tmp_path / "legacy"
+    private_database = app_data_dir / "private_send.db"
+    legacy_database = legacy_dir / "rainier.db"
     initialize_database(private_database)
-    _create_v02_database(legacy_database, tmp_path)
+    _create_v02_database(legacy_database, legacy_dir)
     legacy_bytes_before = legacy_database.read_bytes()
 
     from app.main import create_app
 
     with caplog.at_level(logging.WARNING):
-        application = create_app(data_dir=tmp_path)
+        application = create_app(data_dir=app_data_dir, legacy_data_dir=legacy_dir)
     with TestClient(application) as client:
         created = client.post(
             "/api/messages",
@@ -448,17 +522,9 @@ def test_create_app_prefers_private_database_and_retains_legacy_file(
     assert [item["content"] for item in history.json()["messages"]] == ["private db"]
     assert legacy_database.read_bytes() == legacy_bytes_before
     assert any(
-        "both private_send.db and legacy rainier.db exist" in record.message.lower()
+        "unstarted legacy source" in record.message.lower()
         for record in caplog.records
     )
-
-
-def test_database_path_resolution_does_not_mutate_legacy_data(tmp_path: Path) -> None:
-    legacy_database = tmp_path / "rainier.db"
-    legacy_database.write_bytes(b"legacy database")
-    assert resolve_database_path(tmp_path) == tmp_path / "private_send.db"
-    assert legacy_database.exists()
-    assert not (tmp_path / "private_send.db").exists()
 
 
 def test_windows_storage_roots_can_be_injected(tmp_path: Path) -> None:

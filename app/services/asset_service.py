@@ -8,6 +8,7 @@ import os
 import shutil
 import sqlite3
 import stat
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -119,6 +120,13 @@ def archive_date_for(created_at: datetime) -> str:
     return created_at.astimezone(_host_local_timezone()).date().isoformat()
 
 
+def archive_path_identity(relative_path: str) -> str:
+    """Return the Windows-safe identity used to reserve archive paths."""
+
+    normalized = relative_path.replace("\\", "/")
+    return unicodedata.normalize("NFC", normalized).casefold()
+
+
 def _serialize_datetime(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
@@ -155,6 +163,7 @@ class AssetService:
         staging_dir: Path | str | None = None,
         user_files_dir: Path | str | None = None,
         cleanup_legacy_assets: bool = False,
+        import_legacy_on_start: bool = True,
     ) -> None:
         self.database_path = Path(database_path) if database_path else DATABASE_PATH
         self.data_dir = self.database_path.parent
@@ -170,7 +179,8 @@ class AssetService:
         self.repository = AssetRepository(self.database_path)
         if database_path is not None:
             self.recover_archive_pending()
-            self.import_legacy_assets()
+            if import_legacy_on_start:
+                self.import_legacy_assets()
 
     def _archive_directory(self, created_at: datetime) -> Path:
         date_directory = self.user_files_dir / archive_date_for(created_at)
@@ -197,12 +207,42 @@ class AssetService:
             os.close(descriptor)
         return True
 
+    def _safe_user_file_path(self, relative_path: str) -> Path:
+        """Resolve a database path below the configured user-files root."""
+
+        normalized = relative_path.replace("\\", "/")
+        candidate = (self.user_files_dir / normalized).resolve()
+        root = self.user_files_dir.resolve()
+        if candidate == root or root not in candidate.parents:
+            raise RuntimeError("Asset path escapes the configured user-files root")
+        return candidate
+
     def _archive_temporary_path(
-        self, asset_id: str, created_at: datetime, filename: str
+        self,
+        asset_id: str,
+        relative_path: str | datetime,
+        filename: str | None = None,
     ) -> Path:
-        operation = f"{asset_id}\n{created_at.isoformat()}\n{filename}"
+        """Return the operation-owned temporary beside its committed target."""
+
+        if filename is not None:
+            if not isinstance(relative_path, datetime):
+                raise TypeError("Legacy temporary path requires a creation time")
+            relative_path = (Path(archive_date_for(relative_path)) / filename).as_posix()
+        if not isinstance(relative_path, str):
+            raise TypeError("Archive temporary path requires a relative path")
+        destination = self._safe_user_file_path(relative_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        root = self.user_files_dir.resolve()
+        if (
+            destination.parent.is_symlink()
+            or destination.parent.resolve() == root
+            or root not in destination.parent.resolve().parents
+        ):
+            raise RuntimeError("Archive date directory escapes the user-files root")
+        operation = f"{asset_id}\n{relative_path}"
         key = hashlib.sha256(operation.encode("utf-8")).hexdigest()
-        return self._archive_directory(created_at) / f".private_send_{key}.partial"
+        return destination.parent / f".private_send_{key}.partial"
 
     @staticmethod
     def _remove_archive_temporary(path: Path) -> None:
@@ -220,8 +260,8 @@ class AssetService:
         """Reserve a destination while the caller holds BEGIN IMMEDIATE."""
 
         directory = self._archive_directory(created_at)
-        reserved_paths = {
-            row["relative_path"]
+        reserved_path_keys = {
+            archive_path_identity(row["relative_path"])
             for row in connection.execute("SELECT relative_path FROM assets")
         }
         filename_path = Path(filename)
@@ -232,9 +272,10 @@ class AssetService:
             )
             destination = directory / candidate
             relative_path = (Path(directory.name) / candidate).as_posix()
+            relative_path_key = archive_path_identity(relative_path)
             if not (
                 destination.exists() or destination.is_symlink()
-                or relative_path in reserved_paths
+                or relative_path_key in reserved_path_keys
             ):
                 return candidate
             collision_number += 1
@@ -244,16 +285,44 @@ class AssetService:
         with path.open("rb") as source:
             return hashlib.file_digest(source, "sha256").hexdigest()
 
+    def _publish_archive_temp(self, temporary_path: Path, destination: Path) -> None:
+        """Publish a complete temporary copy without replacing user files."""
+
+        try:
+            if os.name == "nt":
+                os.rename(temporary_path, destination)
+            else:
+                os.link(temporary_path, destination)
+        except FileExistsError:
+            return
+        except OSError:
+            if os.name != "nt":
+                raise
+            destination_created = False
+            try:
+                with temporary_path.open("rb") as source, destination.open("xb") as target:
+                    destination_created = True
+                    shutil.copyfileobj(source, target, CHUNK_SIZE)
+                    target.flush()
+                    os.fsync(target.fileno())
+            except FileExistsError:
+                return
+            except BaseException:
+                if destination_created:
+                    destination.unlink(missing_ok=True)
+                raise
+
     def _place_in_archive(
-        self, source_path: Path, created_at: datetime, filename: str, asset_id: str
+        self, source_path: Path, relative_path: str, asset_id: str
     ) -> Path:
         """Publish only the committed reservation; retries reuse the same file."""
 
-        if _normalize_archive_filename(filename) != filename:
+        destination = self._safe_user_file_path(relative_path)
+        if _normalize_archive_filename(destination.name) != destination.name:
             raise RuntimeError("Invalid archive filename")
-        date_directory = self._archive_directory(created_at)
-        destination = date_directory / filename
-        temporary_path = self._archive_temporary_path(asset_id, created_at, filename)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        date_directory = destination.parent
+        temporary_path = self._archive_temporary_path(asset_id, relative_path)
         if destination.exists() or destination.is_symlink():
             if (
                 destination.is_symlink() or not destination.is_file()
@@ -279,14 +348,12 @@ class AssetService:
         with temporary_path.open("r+b") as temporary:
             os.fsync(temporary.fileno())
         self._sync_directory(self.user_files_dir)
-        try:
-            os.link(temporary_path, destination)
-        except FileExistsError:
-            if (
-                destination.is_symlink() or not destination.is_file()
-                or self._file_digest(destination) != self._file_digest(source_path)
-            ):
-                raise RuntimeError("Reserved archive destination has different content")
+        self._publish_archive_temp(temporary_path, destination)
+        if (
+            destination.is_symlink() or not destination.is_file()
+            or self._file_digest(destination) != self._file_digest(source_path)
+        ):
+            raise RuntimeError("Reserved archive destination has different content")
         self._sync_directory(date_directory)
         self._remove_archive_temporary(temporary_path)
         self._sync_directory(date_directory)
@@ -346,6 +413,17 @@ class AssetService:
                 )
         return imported
 
+    def has_legacy_asset_work(self) -> bool:
+        """Report whether a legacy migration still has recoverable asset work."""
+
+        return any(
+            self._is_legacy_asset_path(asset.relative_path)
+            for asset in [
+                *self.repository.list_available(),
+                *self.repository.list_archive_pending(),
+            ]
+        )
+
     def _remove_owned_legacy_source(self, source_path: Path) -> None:
         """Remove one migrated compatibility copy, never the project source."""
 
@@ -375,6 +453,12 @@ class AssetService:
             self.resolve_asset_path(asset) if legacy
             else self.staging_dir / f"{asset.id}.partial"
         )
+        target_relative_path = (
+            (Path(archive_date_for(asset.created_at)) / asset.stored_filename).as_posix()
+            if legacy
+            else asset.relative_path
+        )
+        destination = self._safe_user_file_path(target_relative_path)
         if source_path.is_file():
             if not legacy and (
                 source_path.stat().st_size != asset.size
@@ -382,10 +466,9 @@ class AssetService:
             ):
                 raise RuntimeError("Pending upload content does not match its metadata")
             destination = self._place_in_archive(
-                source_path, asset.created_at, asset.stored_filename, asset.id
+                source_path, target_relative_path, asset.id
             )
         else:
-            destination = self._archive_directory(asset.created_at) / asset.stored_filename
             if (
                 destination.is_symlink() or not destination.is_file()
                 or destination.stat().st_size != asset.size
@@ -393,13 +476,13 @@ class AssetService:
             ):
                 raise RuntimeError("Pending archive has no complete recoverable copy")
             self._sync_directory(destination.parent)
-            self._remove_archive_temporary(self._archive_temporary_path(
-                asset.id, asset.created_at, asset.stored_filename
-            ))
+            self._remove_archive_temporary(
+                self._archive_temporary_path(asset.id, target_relative_path)
+            )
             self._sync_directory(destination.parent)
         completed = self.repository.update_storage_location(
             asset.id, asset.relative_path, destination.name,
-            destination.relative_to(self.user_files_dir).as_posix(),
+            target_relative_path,
         )
         if completed:
             if legacy:
@@ -663,11 +746,7 @@ class AssetService:
     def resolve_asset_path(self, asset: Asset) -> Path:
         """Resolve an internally stored relative path below the user-files root."""
 
-        candidate = (self.user_files_dir / asset.relative_path).resolve()
-        root = self.user_files_dir.resolve()
-        if candidate != root and root not in candidate.parents:
-            raise RuntimeError("Asset path escapes the configured user-files root")
-        return candidate
+        return self._safe_user_file_path(asset.relative_path)
 
     def get_asset_file(self, asset_id: str) -> tuple[Asset, Path] | None:
         asset = self.repository.get(asset_id)

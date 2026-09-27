@@ -45,6 +45,9 @@ LOGGER = logging.getLogger(__name__)
 
 STATIC_NO_CACHE_PATHS = {"/", "/app.js", "/style.css"}
 LEGACY_ASSETS_CLEANUP_MARKER = ".legacy_assets_copy_owned"
+LEGACY_MIGRATION_DIRECTORY = "migration"
+LEGACY_MIGRATION_STARTED = "legacy_v1_started"
+LEGACY_MIGRATION_COMPLETED = "legacy_v1_completed"
 
 
 def configure_cache_policy(application: FastAPI) -> None:
@@ -148,24 +151,40 @@ def bootstrap_app(
 
     cleanup_legacy_assets = False
     cleanup_marker = app_data_path / LEGACY_ASSETS_CLEANUP_MARKER
-    legacy_database = source_path / LEGACY_DATABASE_NAME
-    if database_path.exists():
-        if legacy_database.is_file():
-            LOGGER.warning(
-                "Both private_send.db and legacy rainier.db exist; "
-                "using private_send.db and retaining rainier.db"
-            )
-    elif source_path.exists():
+    migration_directory = app_data_path / LEGACY_MIGRATION_DIRECTORY
+    started_marker = migration_directory / LEGACY_MIGRATION_STARTED
+    completed_marker = migration_directory / LEGACY_MIGRATION_COMPLETED
+    legacy_private_database = source_path / "private_send.db"
+    legacy_rainier_database = source_path / LEGACY_DATABASE_NAME
+    source_is_external = source_path.resolve() != app_data_path.resolve()
+    has_legacy_database = source_is_external and (
+        legacy_private_database.is_file() or legacy_rainier_database.is_file()
+    )
+    migration_started = started_marker.is_file()
+    migration_completed = completed_marker.is_file()
+    migration_active = has_legacy_database and not migration_completed
+
+    if migration_active and database_path.exists() and not migration_started:
+        LOGGER.warning(
+            "Current private_send.db exists with an unstarted legacy source; "
+            "retaining the current database without merging legacy data"
+        )
+        migration_directory.mkdir(parents=True, exist_ok=True)
+        completed_marker.touch(exist_ok=True)
+        migration_active = False
+
+    if migration_active:
         app_data_path.mkdir(parents=True, exist_ok=True)
-        if source_path.resolve() != app_data_path.resolve():
-            _copy_missing_tree(
-                source_path,
-                app_data_path,
-                ignored_names={"private_send.db", LEGACY_DATABASE_NAME, "assets"},
-            )
-        source_database = source_path / "private_send.db"
+        migration_directory.mkdir(parents=True, exist_ok=True)
+        started_marker.touch(exist_ok=True)
+        _copy_missing_tree(
+            source_path,
+            app_data_path,
+            ignored_names={"private_send.db", LEGACY_DATABASE_NAME, "assets"},
+        )
+        source_database = legacy_private_database
         if not source_database.is_file():
-            source_database = legacy_database
+            source_database = legacy_rainier_database
         if source_database.is_file() and not database_path.exists():
             _copy_database_if_absent(source_database, database_path)
         legacy_assets = source_path / "assets"
@@ -190,6 +209,7 @@ def bootstrap_app(
         staging_dir=app_data_path / "staging",
         user_files_dir=files_path,
         cleanup_legacy_assets=cleanup_legacy_assets,
+        import_legacy_on_start=migration_active,
     )
     service.recover_delete_pending()
     if cleanup_legacy_assets:
@@ -200,6 +220,8 @@ def bootstrap_app(
         else:
             cleanup_marker.unlink(missing_ok=True)
     service.scan_staging()
+    if migration_active and not service.has_legacy_asset_work():
+        completed_marker.touch(exist_ok=True)
     message_service = MessageService(MessageRepository(database_path))
     return database_path, files_path, service, message_service
 

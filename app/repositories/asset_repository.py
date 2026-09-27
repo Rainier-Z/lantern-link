@@ -144,7 +144,8 @@ class AssetRepository:
                 parameters.extend([cursor["created_at"], cursor["created_at"], before])
             rows = connection.execute(
                 """SELECT m.id AS message_id, m.sender, a.id AS asset_id, a.kind,
-                          a.original_filename AS filename, a.extension, a.relative_path,
+                          a.original_filename AS filename, a.stored_filename,
+                          a.extension, a.relative_path,
                           a.size, COALESCE(m.created_at, a.created_at) AS created_at,
                           a.status
                      FROM messages AS m
@@ -171,7 +172,7 @@ class AssetRepository:
                     kind=row["kind"],
                     sender=row["sender"],
                     filename=row["filename"],
-                    display_name=row["filename"],
+                    display_name=row["stored_filename"],
                     extension=row["extension"],
                     file_format=file_format_for(row["kind"], row["extension"]),
                     size=row["size"],

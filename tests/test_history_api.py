@@ -260,3 +260,20 @@ def test_history_returns_format_direction_archive_date_and_cursor_pages(
 
     pdf_only = client.get("/api/history?format=pdf", headers=headers)
     assert [item["filename"] for item in pdf_only.json()["items"]] == ["report.pdf"]
+
+
+def test_history_display_name_is_the_actual_archived_filename(tmp_path: Path) -> None:
+    client, headers, _ = _client_for(tmp_path)
+    _upload(
+        client, headers, filename="report.pdf", content=b"first",
+        mime_type="application/pdf", kind="file",
+    )
+    _upload(
+        client, headers, filename="report.pdf", content=b"second",
+        mime_type="application/pdf", kind="file",
+    )
+
+    items = client.get("/api/history?format=pdf", headers=headers).json()["items"]
+
+    assert items[0]["filename"] == "report.pdf"
+    assert items[0]["display_name"] == "report (1).pdf"

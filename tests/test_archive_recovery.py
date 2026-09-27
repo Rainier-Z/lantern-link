@@ -18,6 +18,7 @@ from fastapi import UploadFile
 from app.core.database import get_connection, initialize_database
 from app.repositories.message_repository import MessageRepository
 from app.services.asset_service import AssetService, FILE_POLICY
+from app.services import asset_service
 
 
 def service_for(tmp_path: Path) -> AssetService:
@@ -107,19 +108,18 @@ def test_initial_database_failure_never_publishes_untracked_archive(tmp_path):
 
 def test_publication_failure_keeps_record_and_reserved_name(tmp_path, monkeypatch):
     service = service_for(tmp_path)
-    original_link = os.link
 
     def fail_publication(*args, **kwargs):
         raise OSError("injected archive publication failure")
 
-    monkeypatch.setattr(os, "link", fail_publication)
+    monkeypatch.setattr(service, "_publish_archive_temp", fail_publication)
     with pytest.raises(OSError, match="injected archive publication failure"):
         upload(service)
     pending, = service.repository.list_archive_pending()
     assert archived_files(service) == []
     assert (service.staging_dir / f"{pending.id}.partial").is_file()
 
-    monkeypatch.setattr(os, "link", original_link)
+    monkeypatch.undo()
     _, second = upload(service, b"second upload")
     assert second.stored_filename == "report (1).bin"
     restarted = service_for(tmp_path)
@@ -128,20 +128,69 @@ def test_publication_failure_keeps_record_and_reserved_name(tmp_path, monkeypatc
     assert len(archived_files(restarted)) == 2
 
 
+def test_pending_archive_keeps_its_committed_target_when_timezone_changes(
+    tmp_path, monkeypatch
+):
+    service = service_for(tmp_path)
+    monkeypatch.setattr(asset_service, "_host_local_timezone", lambda: timezone(timedelta(hours=8)))
+    original_place = service._place_in_archive
+    monkeypatch.setattr(
+        service, "_place_in_archive", lambda *args: (_ for _ in ()).throw(OSError())
+    )
+    with pytest.raises(OSError):
+        upload(service)
+    pending, = service.repository.list_archive_pending()
+    committed_path = pending.relative_path
+
+    monkeypatch.setattr(service, "_place_in_archive", original_place)
+    monkeypatch.setattr(asset_service, "_host_local_timezone", lambda: timezone(timedelta(hours=-7)))
+    assert service.recover_archive_pending() == [pending.id]
+
+    recovered = service.repository.get(pending.id)
+    assert recovered is not None
+    assert recovered.relative_path == committed_path
+    assert (service.user_files_dir / committed_path).is_file()
+
+
+def test_windows_archive_publish_does_not_require_hard_links(tmp_path, monkeypatch):
+    service = service_for(tmp_path)
+    monkeypatch.setattr(asset_service.os, "name", "nt")
+    monkeypatch.setattr(
+        asset_service.os, "link", lambda *args, **kwargs: (_ for _ in ()).throw(OSError())
+    )
+
+    _, asset = upload(service)
+
+    assert service.resolve_asset_path(asset).read_bytes() == b"complete upload"
+
+
+def test_windows_archive_publish_does_not_replace_an_existing_destination(tmp_path):
+    service = service_for(tmp_path)
+    temporary = tmp_path / "complete.partial"
+    destination = tmp_path / "report.bin"
+    temporary.write_bytes(b"complete upload")
+    destination.write_bytes(b"user's existing file")
+
+    service._publish_archive_temp(temporary, destination)
+
+    assert destination.read_bytes() == b"user's existing file"
+    assert temporary.read_bytes() == b"complete upload"
+
+
 def test_crash_immediately_after_publication_keeps_pending_intent(tmp_path, monkeypatch):
     service = service_for(tmp_path)
-    original_link = os.link
+    original_publish = service._publish_archive_temp
 
-    def publish_then_crash(*args, **kwargs):
-        original_link(*args, **kwargs)
+    def publish_then_crash(temporary_path, destination):
+        original_publish(temporary_path, destination)
         raise SystemExit("injected process crash")
 
-    monkeypatch.setattr(os, "link", publish_then_crash)
+    monkeypatch.setattr(service, "_publish_archive_temp", publish_then_crash)
     with pytest.raises(SystemExit, match="injected process crash"):
         upload(service)
     pending, = service.repository.list_archive_pending()
     formal, = archived_files(service)
-    monkeypatch.setattr(os, "link", original_link)
+    monkeypatch.setattr(service, "_publish_archive_temp", original_publish)
 
     restarted = service_for(tmp_path)
     assert restarted.repository.get(pending.id).status == "AVAILABLE"
@@ -246,7 +295,7 @@ def test_fresh_environment_import_and_bootstrap_initialize_before_recovery(tmp_p
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("crash_point", ["during_copy", "before_link", "after_link"])
+@pytest.mark.parametrize("crash_point", ["during_copy", "before_publish", "after_publish"])
 def test_real_process_exit_recovers_only_operation_owned_temporary_files(tmp_path, crash_point):
     service = service_for(tmp_path)
     program = """
@@ -261,23 +310,23 @@ from app.services.asset_service import AssetService, FILE_POLICY
 
 service = AssetService(Path(sys.argv[1]), user_files_dir=Path(sys.argv[2]))
 crash_point = sys.argv[3]
-original_link = os.link
+original_publish = service._publish_archive_temp
 
 def interrupted_copy(source, destination, length):
     destination.write(source.read(3))
     destination.flush()
     os._exit(71)
 
-def interrupted_link(source, destination):
-    if crash_point == 'before_link':
+def interrupted_publish(temporary_path, destination):
+    if crash_point == 'before_publish':
         os._exit(71)
-    original_link(source, destination)
+    original_publish(temporary_path, destination)
     os._exit(71)
 
 if crash_point == 'during_copy':
     shutil.copyfileobj = interrupted_copy
 else:
-    os.link = interrupted_link
+    service._publish_archive_temp = interrupted_publish
 asyncio.run(service.persist_upload(
     UploadFile(filename='report.bin', file=BytesIO(b'complete upload')), 'pc', FILE_POLICY
 ))
@@ -292,14 +341,15 @@ asyncio.run(service.persist_upload(
     temporary = service._archive_temporary_path(
         pending.id, pending.created_at, pending.stored_filename
     )
-    assert temporary.is_file()
-    assert temporary.read_bytes() == (
-        b"com" if crash_point == "during_copy" else b"complete upload"
-    )
+    assert temporary.is_file() == (crash_point != "after_publish")
+    if temporary.exists():
+        assert temporary.read_bytes() == (
+            b"com" if crash_point == "during_copy" else b"complete upload"
+        )
     source = service.staging_dir / f"{pending.id}.partial"
     assert source.read_bytes() == b"complete upload"
     formal = service.user_files_dir / pending.relative_path
-    assert formal.exists() == (crash_point == "after_link")
+    assert formal.exists() == (crash_point == "after_publish")
     unrelated = temporary.parent / ".private_send_unrelated.partial"
     unrelated.write_bytes(b"user file")
 
@@ -400,13 +450,11 @@ def test_deleting_pending_upload_keeps_recovery_ownership_until_archive_completi
     tmp_path, monkeypatch, failure
 ):
     service = service_for(tmp_path)
-    original_link = os.link
-
-    def failed_link(*args, **kwargs):
+    def failed_publish(*args, **kwargs):
         raise OSError("injected publication failure")
 
     if failure == "publication":
-        monkeypatch.setattr(os, "link", failed_link)
+        monkeypatch.setattr(service, "_publish_archive_temp", failed_publish)
         expected_error = OSError
     else:
         reject_completion(service)
@@ -427,9 +475,10 @@ def test_deleting_pending_upload_keeps_recovery_ownership_until_archive_completi
     staging = service.staging_dir / f"{pending.id}.partial"
     assert staging.read_bytes() == b"complete upload"
 
-    monkeypatch.setattr(os, "link", original_link)
     if failure == "database":
         allow_completion(service)
+    else:
+        monkeypatch.undo()
     recovered = service_for(tmp_path)
     assert recovered.repository.get(pending.id).status == "DELETED"
     assert (service.user_files_dir / pending.relative_path).read_bytes() == b"complete upload"

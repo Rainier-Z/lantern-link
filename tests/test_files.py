@@ -142,6 +142,51 @@ def test_deleted_formal_path_is_never_reused_by_a_later_upload(tmp_path: Path) -
     assert client.get(f"/api/assets/{second['id']}", headers=headers).content == b"second"
 
 
+@pytest.mark.parametrize(
+    ("first_name", "second_name"),
+    (
+        ("Report.pdf", "report.pdf"),
+        ("REPORT.PDF", "report.pdf"),
+        ("R\u00e9sum\u00e9.pdf", "Re\u0301sume\u0301.pdf"),
+    ),
+)
+def test_windows_equivalent_archive_paths_are_never_reused(
+    tmp_path: Path, first_name: str, second_name: str
+) -> None:
+    client, headers, user_files_dir = client_for(tmp_path)
+    first = upload_file(client, headers, first_name, b"first").json()["asset"]
+    (user_files_dir / first["relative_path"]).unlink()
+
+    second = upload_file(client, headers, second_name, b"second").json()["asset"]
+
+    assert first["stored_filename"] == first_name
+    assert second["stored_filename"].endswith(" (1).pdf")
+    assert second["relative_path"] != first["relative_path"]
+
+
+@pytest.mark.parametrize(
+    ("first_name", "second_name"),
+    (
+        ("Report.pdf", "report.pdf"),
+        ("REPORT.PDF", "report.pdf"),
+        ("R\u00e9sum\u00e9.pdf", "Re\u0301sume\u0301.pdf"),
+    ),
+)
+def test_deleted_asset_path_identity_remains_reserved(
+    tmp_path: Path, first_name: str, second_name: str
+) -> None:
+    client, headers, user_files_dir = client_for(tmp_path)
+    first = upload_file(client, headers, first_name, b"first").json()
+    first_path = user_files_dir / first["asset"]["relative_path"]
+    deleted = client.delete(f"/api/messages/{first['message']['id']}", headers=headers)
+    assert deleted.status_code == 200, deleted.text
+    first_path.unlink()
+
+    second = upload_file(client, headers, second_name, b"second").json()["asset"]
+
+    assert second["stored_filename"].endswith(" (1).pdf")
+
+
 def test_upload_filename_is_normalized_to_a_safe_archive_basename(
     tmp_path: Path,
 ) -> None:

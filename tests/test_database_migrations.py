@@ -282,6 +282,107 @@ def test_bootstrap_cleans_only_its_migrated_legacy_asset_copy(tmp_path: Path) ->
     assert not (app_data_dir / ".legacy_assets_copy_owned").exists()
 
 
+def test_legacy_asset_copy_marker_precedes_copy_and_recovers_after_interruption(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import app.main as main_module
+
+    legacy_dir = tmp_path / "legacy-project-data"
+    app_data_dir = tmp_path / "app-data"
+    user_files_dir = tmp_path / "user-files"
+    _create_v02_database(legacy_dir / "private_send.db", legacy_dir)
+    with sqlite3.connect(legacy_dir / "private_send.db") as connection:
+        connection.execute(
+            "UPDATE assets SET relative_path = ? WHERE id = 'legacy-asset'",
+            ("assets/2026/01/02/legacy-image.jpg",),
+        )
+    original_asset = legacy_dir / "assets" / "legacy-image.jpg"
+    dated_asset = legacy_dir / "assets" / "2026" / "01" / "02" / "legacy-image.jpg"
+    dated_asset.parent.mkdir(parents=True)
+    original_asset.replace(dated_asset)
+    marker = app_data_dir / ".legacy_assets_copy_owned"
+    original_copy = main_module._copy_missing_tree
+    interrupted = False
+
+    def interrupt_asset_copy(
+        source: Path, destination: Path, *, ignored_names=None
+    ) -> None:
+        nonlocal interrupted
+        if source == legacy_dir / "assets" and not interrupted:
+            assert marker.is_file()
+            interrupted = True
+            original_copy(source, destination, ignored_names=ignored_names)
+            raise OSError("simulated interruption during compatibility copy")
+        original_copy(source, destination, ignored_names=ignored_names)
+
+    monkeypatch.setattr(main_module, "_copy_missing_tree", interrupt_asset_copy)
+    with pytest.raises(OSError, match="simulated interruption"):
+        main_module.bootstrap_app(
+            app_data_dir=app_data_dir,
+            user_files_dir=user_files_dir,
+            legacy_data_dir=legacy_dir,
+        )
+
+    compatibility_copy = (
+        user_files_dir / "assets" / "2026" / "01" / "02" / "legacy-image.jpg"
+    )
+    source_asset = dated_asset
+    assert marker.is_file()
+    assert compatibility_copy.read_bytes() == b"legacy image bytes"
+    assert source_asset.read_bytes() == b"legacy image bytes"
+
+    main_module.bootstrap_app(
+        app_data_dir=app_data_dir,
+        user_files_dir=user_files_dir,
+        legacy_data_dir=legacy_dir,
+    )
+
+    assert not marker.exists()
+    assert not (user_files_dir / "assets").exists()
+    assert source_asset.read_bytes() == b"legacy image bytes"
+
+
+def test_legacy_asset_cleanup_never_targets_project_data_assets(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import app.main as main_module
+
+    project_root = tmp_path / "project"
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", project_root)
+    legacy_dir = tmp_path / "legacy-project-data"
+    app_data_dir = tmp_path / "app-data"
+    user_files_dir = project_root / "data"
+    _create_v02_database(legacy_dir / "private_send.db", legacy_dir)
+    with sqlite3.connect(legacy_dir / "private_send.db") as connection:
+        connection.execute(
+            "UPDATE assets SET relative_path = ? WHERE id = 'legacy-asset'",
+            ("assets/2026/01/02/legacy-image.jpg",),
+        )
+    original_asset = legacy_dir / "assets" / "legacy-image.jpg"
+    source_asset = legacy_dir / "assets" / "2026" / "01" / "02" / "legacy-image.jpg"
+    source_asset.parent.mkdir(parents=True)
+    original_asset.replace(source_asset)
+    project_asset = (
+        project_root / "data" / "assets" / "2026" / "01" / "02" / "legacy-image.jpg"
+    )
+    migration_marker = app_data_dir / ".legacy_assets_copy_owned"
+    migration_marker.parent.mkdir(parents=True)
+    migration_marker.touch()
+
+    from app.main import bootstrap_app
+
+    bootstrap_app(
+        app_data_dir=app_data_dir,
+        user_files_dir=user_files_dir,
+        legacy_data_dir=legacy_dir,
+    )
+
+    assert project_asset.read_bytes() == b"legacy image bytes"
+    assert source_asset.read_bytes() == b"legacy image bytes"
+    assert project_asset.parent.is_dir()
+    assert not migration_marker.exists()
+
+
 def test_bootstrap_preserves_conflicting_destination_files_and_copies_missing_legacy_files(
     tmp_path: Path,
 ) -> None:

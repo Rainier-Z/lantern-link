@@ -189,17 +189,26 @@ def bootstrap_app(
             _copy_database_if_absent(source_database, database_path)
         legacy_assets = source_path / "assets"
         target_assets = files_path / "assets"
+        protected_project_assets = (PROJECT_ROOT / "data" / "assets").resolve()
+        target_is_protected = target_assets.resolve() == protected_project_assets
+        if target_is_protected:
+            cleanup_marker.unlink(missing_ok=True)
         if (
             legacy_assets.is_dir()
             and legacy_assets.resolve() != target_assets.resolve()
         ):
             target_assets_was_absent = not target_assets.exists()
-            _copy_missing_tree(legacy_assets, target_assets)
-            if target_assets_was_absent:
+            if target_assets_was_absent and not target_is_protected:
                 app_data_path.mkdir(parents=True, exist_ok=True)
                 cleanup_marker.touch(exist_ok=True)
+            _copy_missing_tree(legacy_assets, target_assets)
 
-    cleanup_legacy_assets = cleanup_marker.is_file()
+    target_assets = files_path / "assets"
+    protected_project_assets = (PROJECT_ROOT / "data" / "assets").resolve()
+    cleanup_legacy_assets = (
+        cleanup_marker.is_file()
+        and target_assets.resolve() != protected_project_assets
+    )
 
     app_data_path.mkdir(parents=True, exist_ok=True)
     files_path.mkdir(parents=True, exist_ok=True)

@@ -154,6 +154,23 @@ def test_static_shell_uses_composer_batch_contract_without_storage_ui() -> None:
     assert 'white-space: pre-line' in css
 
 
+def test_pairing_ui_displays_only_safe_address_and_warns_on_loopback() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "app" / "web" / "app.js").read_text(encoding="utf-8")
+    html = (root / "app" / "web" / "index.html").read_text(encoding="utf-8")
+
+    assert 'api("/api/pairing")' in script
+    assert 'id="pairing-address"' in html
+    assert 'id="pairing-copy"' in html
+    assert "info.pairing_display_url" in script
+    assert "state.pairingUrl = info.pairing_url" in script
+    assert 'el.pairing_address.textContent = info.pairing_url' not in script
+    assert "network.loopback_only" in script
+    assert "same Wi-Fi or VPN" in script
+    assert "Windows Firewall" in script
+    assert "Guest Wi-Fi" in script
+
+
 def test_asset_endpoint_keeps_bearer_authentication(tmp_path: Path) -> None:
     with TestClient(create_app(data_dir=tmp_path)) as client:
         response = client.get("/api/assets/not-an-asset")

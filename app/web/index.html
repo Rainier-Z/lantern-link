@@ -80,9 +80,11 @@
         <div class="pairing-copy">
           <p class="section-label">Bring iPhone into the channel</p>
           <h2>Scan once. Stay connected.</h2>
-          <p class="pairing-address-label">iPhone pairing</p>
-          <p class="pairing-address" id="pairing-address">Use the QR code to open this channel.</p>
-          <p class="pairing-note" id="pairing-note">Use the camera app on iPhone, then open the link in Safari.</p>
+          <p class="pairing-address-label">iPhone pairing address</p>
+          <p class="pairing-address" id="pairing-address">Checking local network…</p>
+          <button class="pairing-copy-button" id="pairing-copy" type="button" hidden>Copy pairing link</button>
+          <p class="pairing-note" id="pairing-note" aria-live="polite">Use the camera app on iPhone, then open the link in Safari.</p>
+          <p class="pairing-diagnostic" id="pairing-diagnostic" aria-live="polite"></p>
         </div>
         <figure class="qr-frame" id="qr-frame">
           <img id="pairing-qr" alt="QR code for opening private_send on iPhone">

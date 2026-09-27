@@ -28,7 +28,7 @@ from app.core.config import (
     resolve_user_files_dir,
 )
 from app.core.database import initialize_database
-from app.core.network import build_service_url, get_lan_ip
+from app.core.network import LanNetworkInfo, build_service_url, get_lan_network_info
 from app.core.security import (
     SESSION_COOKIE_NAME,
     get_access_token,
@@ -77,19 +77,49 @@ def version() -> dict[str, str]:
     return {"version": APP_VERSION, "build": APP_BUILD}
 
 
-def pairing(_: str = Depends(require_bearer_token)) -> dict[str, str]:
-    """Return the authenticated pairing URL and QR image endpoint."""
+def pairing(_: str = Depends(require_bearer_token)) -> dict[str, object]:
+    """Return the authenticated pairing URL and selected LAN diagnostics."""
 
+    network = get_lan_network_info(PORT)
+    display_url = (
+        ""
+        if network.loopback_only
+        else build_service_url(network.selected_ip, network.port)
+    )
+    pairing_url = (
+        ""
+        if network.loopback_only
+        else build_service_url(network.selected_ip, network.port, get_access_token())
+    )
     return {
-        "pairing_url": build_service_url(get_lan_ip(), PORT, get_access_token()),
+        "pairing_url": pairing_url,
+        "pairing_display_url": display_url,
         "qr_image_url": "/api/pairing/qr",
+        "pairing_available": not network.loopback_only,
+        "network": {
+            "selected_ip": network.selected_ip,
+            "source": network.source,
+            "port": network.port,
+            "loopback_only": network.loopback_only,
+        },
     }
 
 
 def pairing_qr(_: str = Depends(require_bearer_token)) -> Response:
     """Return the authenticated pairing QR image."""
 
-    return Response(content=generate_pairing_qr(), media_type="image/png")
+    network = get_lan_network_info(PORT)
+    if network.loopback_only:
+        return JSONResponse(
+            {
+                "detail": "Pairing QR is unavailable because no LAN IPv4 address was found"
+            },
+            status_code=503,
+        )
+    return Response(
+        content=generate_pairing_qr(network),
+        media_type="image/png",
+    )
 
 
 def root(request: Request, token: str | None = None):
@@ -346,12 +376,19 @@ def create_app(
 app = create_app()
 
 
-def generate_pairing_qr() -> bytes:
+def generate_pairing_qr(network: LanNetworkInfo | None = None) -> bytes:
     """Generate pairing QR PNG bytes without writing the token to disk."""
 
     import qrcode
 
-    pairing_url = build_service_url(get_lan_ip(), PORT, get_access_token())
+    selected_network = network or get_lan_network_info(PORT)
+    if selected_network.loopback_only:
+        raise RuntimeError("Pairing QR is unavailable without a LAN IPv4 address")
+    pairing_url = build_service_url(
+        selected_network.selected_ip,
+        selected_network.port,
+        get_access_token(),
+    )
     image = qrcode.make(pairing_url)
     output = BytesIO()
     image.save(output, format="PNG")
@@ -359,12 +396,27 @@ def generate_pairing_qr() -> bytes:
 
 
 def start_server() -> None:
-    """Prepare pairing assets, open the local UI, and serve on the LAN."""
+    """Report network availability, open the local UI, and serve on the LAN."""
 
     import uvicorn
 
-    generate_pairing_qr()
+    network = get_lan_network_info(PORT)
     local_url = build_service_url("127.0.0.1", PORT, get_access_token())
+    lan_url = build_service_url(network.selected_ip, network.port)
+    LOGGER.info("private_send %s", APP_VERSION)
+    LOGGER.info("Local: %s", build_service_url("127.0.0.1", PORT))
+    LOGGER.info("LAN: %s", lan_url)
+    pairing_availability = "unavailable" if network.loopback_only else "available"
+    LOGGER.info("Pairing availability: %s", pairing_availability)
+    LOGGER.info("LAN source: %s", network.source)
+    if network.candidates:
+        LOGGER.info("LAN candidates: %s", ", ".join(network.candidates))
+    if network.loopback_only:
+        LOGGER.warning(
+            "No usable LAN IPv4 address was found; iPhone pairing is unavailable"
+        )
+    else:
+        generate_pairing_qr(network)
     with suppress(Exception):
         webbrowser.open(local_url)
     uvicorn.run(app, host=HOST, port=PORT)

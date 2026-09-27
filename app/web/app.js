@@ -7,10 +7,10 @@
     token: new URLSearchParams(location.search).get("token") || "",
     device: "pc", ids: new Set(), syncCursor: "", oldestId: "", objectUrls: new Set(),
     assetUrls: new Map(), assetUrlRequests: new Map(), assetObserver: null, assetLoaders: new WeakMap(),
-    modalObjectUrl: "", pairingObjectUrl: "", modalRequest: 0, composerEntries: [], uploadRunning: false, clientEntrySeq: 0, textSending: false, scrollFrame: 0,
+    modalObjectUrl: "", pairingObjectUrl: "", pairingUrl: "", modalRequest: 0, composerEntries: [], uploadRunning: false, clientEntrySeq: 0, textSending: false, scrollFrame: 0,
     historyMode: "date", historyRequest: 0, historyController: null, historySearchTimer: 0, historyReturnFocus: null, historyItems: [], historyCursor: "", historyHasMore: false, historyLoading: false, toastTimer: 0,
   };
-  const ids = ["app-shell", "status-dot", "connection-label", "identity-copy", "device-select", "message-list", "empty-state", "feedback", "composer", "message-input", "send-button", "file-input", "file-pick-button", "composer-batch", "load-more", "pairing-card", "pairing-qr", "qr-frame", "image-modal", "modal-image", "modal-download", "modal-close", "app-version", "history-toggle", "history-overlay", "history-drawer", "history-close", "history-tab-date", "history-tab-file", "history-type", "history-format", "history-search", "history-status", "history-list", "history-more", "batch-toast"];
+  const ids = ["app-shell", "status-dot", "connection-label", "identity-copy", "device-select", "message-list", "empty-state", "feedback", "composer", "message-input", "send-button", "file-input", "file-pick-button", "composer-batch", "load-more", "pairing-card", "pairing-address", "pairing-copy", "pairing-note", "pairing-diagnostic", "pairing-qr", "qr-frame", "image-modal", "modal-image", "modal-download", "modal-close", "app-version", "history-toggle", "history-overlay", "history-drawer", "history-close", "history-tab-date", "history-tab-file", "history-type", "history-format", "history-search", "history-status", "history-list", "history-more", "batch-toast"];
   const el = Object.fromEntries(ids.map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
   const auth = (headers = {}) => { const result = new Headers(headers); if (state.token) result.set("Authorization", `Bearer ${state.token}`); return result; };
   const assetUrl = (id, download = false) => `/api/assets/${encodeURIComponent(id)}${download ? "?download=1" : ""}`;
@@ -194,12 +194,57 @@
   async function processCurrentBatch() { if (state.uploadRunning) return; const batch = state.composerEntries.filter((entry) => entry.status === "READY"); if (!batch.length) return; state.uploadRunning = true; renderComposerBatch(); try { for (const entry of batch) await processEntry(entry); } finally { state.uploadRunning = false; renderComposerBatch(); } const saved = batch.filter((entry) => entry.status === "COMPLETED"); const failedCount = batch.length - saved.length; const dates = [...new Set(saved.map((entry) => entry.archiveDate).filter(Boolean))]; const location = dates.length === 1 ? `Windows Downloads\\file_private_send\\${dates[0]}` : "Windows Downloads\\file_private_send"; const message = failedCount ? `${saved.length} saved · ${failedCount} failed\nSaved files are in ${location}\nRetry the failed item below.` : `${saved.length} item${saved.length === 1 ? "" : "s"} saved to\n${dates.length > 1 ? "2 date folders under\n" : ""}${location}`; showBatchToast(message, Boolean(failedCount), failedCount ? 8000 : 4000); }
   async function sendTextMessage(content) { try { const body = await (await api("/api/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sender: state.device, type: "text", content }) })).json(); addMessage(body.message); el.message_input.value = ""; scrollToBottom(); feedback(); return true; } catch (error) { feedback(error.message, true); return false; } }
   async function sendComposer(event) { event.preventDefault(); if (state.uploadRunning || state.textSending) return; const content = el.message_input.value; const hasText = Boolean(content.trim()); if (!hasText && !state.composerEntries.some((entry) => entry.status === "READY")) return; if (hasText) { state.textSending = true; updateComposerControls(); const sent = await sendTextMessage(content); state.textSending = false; updateComposerControls(); if (!sent) return; } if (state.composerEntries.some((entry) => entry.status === "READY")) await processCurrentBatch(); }
-  async function pairingQr() { try { const url = makeObjectUrl(await (await api("/api/pairing/qr")).blob()); releaseObjectUrl(state.pairingObjectUrl); state.pairingObjectUrl = url; el.pairing_qr.src = url; } catch (_) { el.qr_frame.hidden = true; } }
+  function pairingSourceLabel(source) {
+    return ({ override: "manual LAN address", candidate: "active network interface", route: "default network route", loopback: "local computer only" })[source] || "detected network";
+  }
+  async function loadPairingInfo() {
+    try {
+      const info = await (await api("/api/pairing")).json();
+      const network = info.network || {};
+      el.pairing_diagnostic.textContent = `LAN source: ${pairingSourceLabel(network.source)} · port ${network.port}`;
+      if (!info.pairing_available || network.loopback_only) {
+        state.pairingUrl = "";
+        el.pairing_address.textContent = "This computer has no reachable LAN address.";
+        el.pairing_copy.hidden = true;
+        el.qr_frame.hidden = true;
+        el.pairing_note.textContent = "Connect the iPhone and Windows PC to the same Wi-Fi or VPN. Check Windows Firewall allows private-network access, and avoid Guest Wi-Fi because it may block devices from reaching each other.";
+        el.pairing_card.classList.add("is-unavailable");
+        return;
+      }
+      state.pairingUrl = info.pairing_url || "";
+      el.pairing_address.textContent = info.pairing_display_url || "LAN pairing address unavailable.";
+      el.pairing_copy.hidden = !state.pairingUrl;
+      el.pairing_card.classList.remove("is-unavailable");
+      if (!state.pairingUrl || !info.qr_image_url) {
+        el.qr_frame.hidden = true;
+        return;
+      }
+      try {
+        const url = makeObjectUrl(await (await api(info.qr_image_url)).blob());
+        releaseObjectUrl(state.pairingObjectUrl);
+        state.pairingObjectUrl = url;
+        el.pairing_qr.src = url;
+        el.qr_frame.hidden = false;
+      } catch (_) { el.qr_frame.hidden = true; }
+    } catch (_) {
+      state.pairingUrl = "";
+      el.pairing_address.textContent = "LAN pairing information could not be loaded.";
+      el.pairing_copy.hidden = true;
+      el.qr_frame.hidden = true;
+      el.pairing_note.textContent = "Check that this page is connected to the running private_send service.";
+      el.pairing_diagnostic.textContent = "";
+      el.pairing_card.classList.add("is-unavailable");
+    }
+  }
   function init() {
     loadVersion(); setupAssetObserver(); state.device = ["localhost", "127.0.0.1"].includes(location.hostname) ? "pc" : "iphone"; el.device_select.value = state.device;
     const updateDevice = () => { state.device = el.device_select.value; el.identity_copy.textContent = `Messages from this browser are labeled ${state.device === "pc" ? "PC" : "iPhone"}.`; };
     updateDevice(); el.device_select.onchange = updateDevice; el.composer.onsubmit = sendComposer; el.message_input.oninput = updateComposerControls; el.message_input.onkeydown = (event) => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); el.composer.requestSubmit(); } };
     el.file_pick_button.onclick = () => el.file_input.click(); el.file_input.onchange = () => handleFileSelection(el.file_input); updateComposerControls();
+    el.pairing_copy.onclick = async () => {
+      try { await navigator.clipboard.writeText(state.pairingUrl); feedback("Pairing link copied."); }
+      catch (_) { feedback("Could not copy the pairing link. Open the QR code with your iPhone camera instead.", true); }
+    };
     el.load_more.onclick = () => older().catch((error) => feedback(error.message, true));
     el.modal_close.onclick = closePreview; el.image_modal.addEventListener("close", closePreview); el.image_modal.onclick = (event) => { if (event.target === el.image_modal) closePreview(); };
     el.history_toggle.onclick = openHistory; el.history_close.onclick = closeHistory; el.history_overlay.onclick = closeHistory;
@@ -213,7 +258,7 @@
     };
     window.addEventListener("keydown", trapHistoryFocus);
     window.addEventListener("beforeunload", () => { clearTimeout(state.toastTimer); clearTimeout(state.historySearchTimer); if (state.assetObserver) state.assetObserver.disconnect(); releaseAllObjectUrls(); });
-    Promise.all([initial(), pairingQr()]).then(() => { connection("connected", "Connected"); poll(); }).catch((error) => { connection(error.status === 401 ? "auth" : "offline", error.status === 401 ? "Needs pairing" : "Offline"); feedback(error.message, true); });
+    Promise.all([initial(), loadPairingInfo()]).then(() => { connection("connected", "Connected"); poll(); }).catch((error) => { connection(error.status === 401 ? "auth" : "offline", error.status === 401 ? "Needs pairing" : "Offline"); feedback(error.message, true); });
   }
   init();
 })();

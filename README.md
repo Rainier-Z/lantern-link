@@ -30,6 +30,14 @@ py -3.11 -m venv .venv
 
 服务默认使用 `9527` 端口，并尝试打开 Windows 本机页面。iPhone 应使用启动页面提供的同一 Wi-Fi 局域网地址和配对二维码。
 
+如果 iPhone 无法打开配对页，请先确认两台设备连接到同一 Wi-Fi 或可信 VPN。Windows 配对卡会显示当前局域网地址来源；检查 Windows 防火墙允许专用网络访问，并避免使用可能隔离设备的 Guest Wi-Fi。若自动选择的网卡地址不可达，可在启动前设置 `PRIVATE_SEND_LAN_IP` 为 Windows 在该 Wi-Fi 上的 IPv4 地址，例如：
+
+```powershell
+$env:PRIVATE_SEND_LAN_IP = "<WIFI_IPV4>"
+```
+
+将 `<WIFI_IPV4>` 替换为 Windows Wi-Fi 网卡的 IPv4 地址后，在同一 PowerShell 窗口启动应用。只填写本机可信局域网地址；不要把服务暴露到公网。
+
 ## 三、配对与传送
 
 ### （一）配对 iPhone

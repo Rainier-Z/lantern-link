@@ -216,11 +216,15 @@ h2 { margin-bottom: 12px; font-size: clamp(1.05rem, 2.2vw, 1.3rem); letter-spaci
 .pairing-copy h2 { margin-top: 8px; }
 .pairing-address-label { margin-top: 20px; }
 .pairing-address { display: block; max-width: 100%; margin-top: 5px; overflow: hidden; color: var(--accent); text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.75rem; }
+.pairing-copy-button { margin-top: 10px; padding: 8px 11px; border: 1px solid var(--line-strong); border-radius: var(--radius); color: var(--accent); background: var(--surface); cursor: pointer; font-size: .74rem; font-weight: 650; }
+.pairing-copy-button:hover { border-color: var(--accent); background: var(--surface-soft); }
+.pairing-copy-button[hidden] { display: none; }
 .pairing-note { margin: 10px 0 0; color: var(--muted); font-size: 0.74rem; line-height: 1.45; }
+.pairing-diagnostic { margin: 8px 0 0; color: var(--quiet); font-size: .67rem; line-height: 1.4; }
 .qr-frame { display: flex; width: 130px; flex: 0 0 130px; flex-direction: column; align-items: center; gap: 8px; margin: 0; }
 .qr-frame img { display: block; width: 112px; height: 112px; padding: 7px; border-radius: var(--radius); background: #f2f7f9; object-fit: contain; }
 .qr-frame figcaption { color: var(--quiet); font-size: 0.63rem; text-align: center; }
-.pairing-card.is-unavailable { display: none; }
+.pairing-card.is-unavailable { border-color: #e8c8cd; background: #fffafa; }
 .app-version { margin-top: 18px; color: var(--quiet); font-size: .68rem; letter-spacing: .04em; text-align: center; }
 .history-overlay { position: fixed; z-index: 20; inset: 0; background: rgba(18, 29, 43, .42); opacity: 0; transition: opacity 180ms ease; }
 .history-overlay.is-visible { opacity: 1; }

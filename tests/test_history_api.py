@@ -277,3 +277,11 @@ def test_history_display_name_is_the_actual_archived_filename(tmp_path: Path) ->
 
     assert items[0]["filename"] == "report.pdf"
     assert items[0]["display_name"] == "report (1).pdf"
+
+    collision_matches = client.get(
+        "/api/history?q=report%20(1)", headers=headers
+    ).json()["items"]
+
+    assert len(collision_matches) == 1
+    assert collision_matches[0]["filename"] == "report.pdf"
+    assert collision_matches[0]["display_name"] == "report (1).pdf"

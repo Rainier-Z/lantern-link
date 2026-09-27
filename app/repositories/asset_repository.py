@@ -125,9 +125,10 @@ class AssetRepository:
                 parameters.extend(extensions)
         if keyword:
             clauses.append(
-                "instr(UNICODE_CASEFOLD(a.original_filename), UNICODE_CASEFOLD(?)) > 0"
+                "(instr(UNICODE_CASEFOLD(a.original_filename), UNICODE_CASEFOLD(?)) > 0 "
+                "OR instr(UNICODE_CASEFOLD(a.stored_filename), UNICODE_CASEFOLD(?)) > 0)"
             )
-            parameters.append(keyword)
+            parameters.extend((keyword, keyword))
         with get_connection(self.database_path) as connection:
             timestamp_expression = "COALESCE(m.created_at, a.created_at)"
             if before:

@@ -76,3 +76,32 @@ def test_lantern_lan_override_uses_the_new_environment_variable(monkeypatch) -> 
 
     assert info.selected_ip == "192.168.10.8"
     assert info.source == "override"
+
+
+def test_lantern_migration_does_not_inherit_private_send_control_files(
+    tmp_path: Path,
+) -> None:
+    from app.main import bootstrap_app
+
+    legacy_data = tmp_path / "private-send"
+    lantern_data = tmp_path / "lantern"
+    initialize_database(legacy_data / "private_send.db")
+    legacy_marker = legacy_data / "migration" / "legacy_v1_completed"
+    legacy_marker.parent.mkdir(parents=True)
+    legacy_marker.touch()
+    (legacy_data / ".legacy_assets_copy_owned").touch()
+
+    database_path, _, _, _ = bootstrap_app(
+        app_data_dir=lantern_data,
+        user_files_dir=tmp_path / "Downloads" / "lantern_link",
+        legacy_data_dir=legacy_data,
+    )
+
+    assert database_path.is_file()
+    assert not (lantern_data / "migration" / "legacy_v1_completed").exists()
+    assert not (lantern_data / ".legacy_assets_copy_owned").exists()
+    assert (
+        lantern_data
+        / "migration"
+        / "private_send_to_lantern_link_completed"
+    ).is_file()

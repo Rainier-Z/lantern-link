@@ -212,8 +212,12 @@ def test_bootstrap_copies_legacy_project_data_and_retains_source(
     assert (user_files_dir / "assets" / "legacy-image.jpg").read_bytes() == source_asset.read_bytes()
     assert asset_service.staging_dir == app_data_dir / "staging"
     assert asset_service.assets_dir == user_files_dir / "assets"
-    assert (app_data_dir / "migration" / "legacy_v1_started").is_file()
-    assert (app_data_dir / "migration" / "legacy_v1_completed").is_file()
+    assert (
+        app_data_dir / "migration" / "private_send_to_lantern_link_started"
+    ).is_file()
+    assert (
+        app_data_dir / "migration" / "private_send_to_lantern_link_completed"
+    ).is_file()
 
     bootstrap_app(
         app_data_dir=app_data_dir,
@@ -479,8 +483,12 @@ def test_app_data_database_takes_priority_over_legacy_project_data(
     with get_connection(database_path) as connection:
         assert [row[0] for row in connection.execute("SELECT id FROM messages")] == ["current"]
     assert legacy_database.read_bytes() == legacy_bytes
-    assert not (app_data_dir / "migration" / "legacy_v1_started").exists()
-    assert (app_data_dir / "migration" / "legacy_v1_completed").is_file()
+    assert not (
+        app_data_dir / "migration" / "private_send_to_lantern_link_started"
+    ).exists()
+    assert (
+        app_data_dir / "migration" / "private_send_to_lantern_link_completed"
+    ).is_file()
 
 
 def test_completed_migration_marker_skips_legacy_asset_import(tmp_path: Path) -> None:
@@ -501,7 +509,9 @@ def test_completed_migration_marker_skips_legacy_asset_import(tmp_path: Path) ->
             "'2026-01-02T00:00:00+00:00')"
         )
     initialize_database(legacy_dir / "rainier.db")
-    marker = app_data_dir / "migration" / "legacy_v1_completed"
+    marker = (
+        app_data_dir / "migration" / "private_send_to_lantern_link_completed"
+    )
     marker.parent.mkdir(parents=True)
     marker.touch()
 

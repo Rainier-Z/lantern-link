@@ -48,9 +48,13 @@ LOGGER = logging.getLogger(__name__)
 
 STATIC_NO_CACHE_PATHS = {"/", "/app.js", "/style.css"}
 LEGACY_ASSETS_CLEANUP_MARKER = ".legacy_assets_copy_owned"
-LEGACY_MIGRATION_DIRECTORY = "migration"
-LEGACY_MIGRATION_STARTED = "legacy_v1_started"
-LEGACY_MIGRATION_COMPLETED = "legacy_v1_completed"
+MIGRATION_DIRECTORY = "migration"
+PRIVATE_SEND_TO_LANTERN_LINK_MIGRATION_STARTED = (
+    "private_send_to_lantern_link_started"
+)
+PRIVATE_SEND_TO_LANTERN_LINK_MIGRATION_COMPLETED = (
+    "private_send_to_lantern_link_completed"
+)
 
 
 def configure_cache_policy(application: FastAPI) -> None:
@@ -203,9 +207,13 @@ def bootstrap_app(
 
     cleanup_legacy_assets = False
     cleanup_marker = app_data_path / LEGACY_ASSETS_CLEANUP_MARKER
-    migration_directory = app_data_path / LEGACY_MIGRATION_DIRECTORY
-    started_marker = migration_directory / LEGACY_MIGRATION_STARTED
-    completed_marker = migration_directory / LEGACY_MIGRATION_COMPLETED
+    migration_directory = app_data_path / MIGRATION_DIRECTORY
+    started_marker = (
+        migration_directory / PRIVATE_SEND_TO_LANTERN_LINK_MIGRATION_STARTED
+    )
+    completed_marker = (
+        migration_directory / PRIVATE_SEND_TO_LANTERN_LINK_MIGRATION_COMPLETED
+    )
     legacy_private_database = source_path / LEGACY_PRIVATE_SEND_DATABASE_NAME
     legacy_rainier_database = source_path / LEGACY_DATABASE_NAME
     source_is_external = source_path.resolve() != app_data_path.resolve()
@@ -232,7 +240,13 @@ def bootstrap_app(
         _copy_missing_tree(
             source_path,
             app_data_path,
-            ignored_names={LEGACY_PRIVATE_SEND_DATABASE_NAME, LEGACY_DATABASE_NAME, "assets"},
+            ignored_names={
+                LEGACY_PRIVATE_SEND_DATABASE_NAME,
+                LEGACY_DATABASE_NAME,
+                "assets",
+                MIGRATION_DIRECTORY,
+                LEGACY_ASSETS_CLEANUP_MARKER,
+            },
         )
         source_database = legacy_private_database
         if not source_database.is_file():

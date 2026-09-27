@@ -121,6 +121,14 @@ def test_static_shell_uses_composer_batch_contract_without_storage_ui() -> None:
     assert 'id="history-more"' in html
     assert 'id="batch-toast" role="status" aria-live="polite"' in html
     assert 'historyHasMore' in script
+    assert 'historyController: null' in script
+    assert 'state.historyController.abort()' in script
+    assert 'if (el.history_drawer.hidden) return;' in script
+    assert 'if (!reset && state.historyLoading) return;' in script
+    assert 'if (reset && state.historyController)' in script
+    assert 'signal: controller.signal' in script
+    assert 'if (request !== state.historyRequest || el.history_drawer.hidden) return;' in script
+    assert 'state.historyRequest += 1; if (state.historyController) state.historyController.abort(); state.historyController = null; state.historyLoading = false;' in script
     assert '"/api/assets"' in script
     assert 'IMAGE_MIME_TYPES' not in script
     assert 'event.isComposing' in script

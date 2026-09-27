@@ -8,7 +8,7 @@
     device: "pc", ids: new Set(), syncCursor: "", oldestId: "", objectUrls: new Set(),
     assetUrls: new Map(), assetUrlRequests: new Map(), assetObserver: null, assetLoaders: new WeakMap(),
     modalObjectUrl: "", pairingObjectUrl: "", modalRequest: 0, composerEntries: [], uploadRunning: false, clientEntrySeq: 0, textSending: false, scrollFrame: 0,
-    historyMode: "date", historyRequest: 0, historySearchTimer: 0, historyReturnFocus: null, historyItems: [], historyCursor: "", historyHasMore: false, historyLoading: false, toastTimer: 0,
+    historyMode: "date", historyRequest: 0, historyController: null, historySearchTimer: 0, historyReturnFocus: null, historyItems: [], historyCursor: "", historyHasMore: false, historyLoading: false, toastTimer: 0,
   };
   const ids = ["app-shell", "status-dot", "connection-label", "identity-copy", "device-select", "message-list", "empty-state", "feedback", "composer", "message-input", "send-button", "file-input", "file-pick-button", "composer-batch", "load-more", "pairing-card", "pairing-qr", "qr-frame", "image-modal", "modal-image", "modal-download", "modal-close", "app-version", "history-toggle", "history-overlay", "history-drawer", "history-close", "history-tab-date", "history-tab-file", "history-type", "history-format", "history-search", "history-status", "history-list", "history-more", "batch-toast"];
   const el = Object.fromEntries(ids.map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
@@ -134,18 +134,23 @@
   function resetHistory() { state.historyItems = []; state.historyCursor = ""; state.historyHasMore = false; }
   function syncHistoryFormat() { const files = el.history_type.value === "file"; el.history_format.hidden = !files; if (!files) el.history_format.value = "all"; }
   async function loadHistory(reset = true) {
-    if (state.historyLoading) return; if (reset) resetHistory(); const request = ++state.historyRequest; const type = el.history_type.value; const format = el.history_format.value; const query = el.history_search.value.trim();
+    if (el.history_drawer.hidden) return;
+    if (!reset && state.historyLoading) return;
+    if (reset && state.historyController) { state.historyController.abort(); state.historyController = null; }
+    const request = ++state.historyRequest; const controller = new AbortController(); state.historyController = controller;
+    if (reset) resetHistory(); const type = el.history_type.value; const format = el.history_format.value; const query = el.history_search.value.trim();
     const search = query ? `&q=${encodeURIComponent(query)}` : ""; const cursor = !reset && state.historyCursor ? `&before=${encodeURIComponent(state.historyCursor)}` : "";
     state.historyLoading = true; el.history_more.hidden = true; el.history_status.textContent = state.historyItems.length ? "Loading more…" : "Loading history…"; if (reset) el.history_list.replaceChildren();
     try {
-      const response = await api(`/api/history?type=${encodeURIComponent(type)}&format=${encodeURIComponent(format)}&limit=100${search}${cursor}`); const body = await response.json();
+      const response = await api(`/api/history?type=${encodeURIComponent(type)}&format=${encodeURIComponent(format)}&limit=100${search}${cursor}`, { signal: controller.signal }); const body = await response.json();
       if (request !== state.historyRequest || el.history_drawer.hidden) return;
       state.historyItems.push(...(Array.isArray(body.items) ? body.items : [])); state.historyCursor = body.next_cursor || ""; state.historyHasMore = Boolean(body.has_more); renderHistory(state.historyItems); el.history_more.hidden = !state.historyHasMore;
-    } catch (_) {
+    } catch (error) {
+      if (error.name === "AbortError") return;
       if (request !== state.historyRequest || el.history_drawer.hidden) return;
       el.history_status.textContent = "History couldn't be loaded. Try again.";
       const retry = action("Retry", loadHistory); retry.classList.add("history-action"); el.history_list.replaceChildren(retry);
-    } finally { state.historyLoading = false; }
+    } finally { if (request === state.historyRequest) { state.historyLoading = false; state.historyController = null; } }
   }
   function openHistory() {
     if (!el.history_drawer.hidden) { closeHistory(); return; }
@@ -157,7 +162,7 @@
   }
   function closeHistory() {
     if (el.history_drawer.hidden) return;
-    state.historyRequest += 1; el.history_drawer.classList.remove("is-open"); el.history_overlay.classList.remove("is-visible");
+    state.historyRequest += 1; if (state.historyController) state.historyController.abort(); state.historyController = null; state.historyLoading = false; el.history_drawer.classList.remove("is-open"); el.history_overlay.classList.remove("is-visible");
     el.history_drawer.hidden = true; el.history_overlay.hidden = true; el.app_shell.inert = false; el.app_shell.removeAttribute("aria-hidden");
     document.body.classList.remove("history-open"); el.history_toggle.setAttribute("aria-expanded", "false");
     const focusTarget = state.historyReturnFocus && state.historyReturnFocus.isConnected ? state.historyReturnFocus : el.history_toggle;

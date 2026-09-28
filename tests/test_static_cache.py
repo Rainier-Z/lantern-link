@@ -42,7 +42,7 @@ def test_version_endpoint_is_public_and_reports_v1(tmp_path: Path) -> None:
         assert response.status_code == 200, response.text
         body = response.json()
         assert set(body) == {"version", "build"}
-        assert body["version"] == "1.0"
+        assert body["version"] == "1.0 Preview"
         assert isinstance(body["build"], str)
         assert body["build"].strip()
 

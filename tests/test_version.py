@@ -16,7 +16,7 @@ def test_version_endpoint_reports_v1_and_runtime_build(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json() == {
-        "version": "1.0",
+        "version": "1.0 Preview",
         "build": version_module.APP_BUILD,
     }
     assert response.json()["build"]
@@ -25,7 +25,7 @@ def test_version_endpoint_reports_v1_and_runtime_build(tmp_path: Path) -> None:
 def test_fastapi_version_matches_application_version(tmp_path: Path) -> None:
     application = create_app(data_dir=tmp_path)
 
-    assert application.version == "1.0"
+    assert application.version == "1.0 Preview"
 
 
 def test_resolve_build_returns_unknown_when_git_is_unavailable(monkeypatch) -> None:
